@@ -44,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--count must be greater than zero")
 
     try:
-        device = args.device or find_vendor_hidraw().path
+        device = args.device or find_vendor_hidraw(require_original=True).path
         capture(device, count=args.count, include_unknown=args.include_unknown)
     except (DeviceDiscoveryError, FileNotFoundError, PermissionError, OSError) as error:
         raise SystemExit(f"capture failed: {error}") from error

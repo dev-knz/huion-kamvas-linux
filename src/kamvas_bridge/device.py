@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 GS1333_HID_ID = "0003:0000256C:00002008"
@@ -11,16 +12,23 @@ GS1333_HID_ID = "0003:0000256C:00002008"
 # This differentiates it from the pen and emulated-keyboard interfaces without
 # relying on a non-persistent /dev/hidraw number.
 VENDOR_DESCRIPTOR_PREFIX = bytes.fromhex("06 00 ff 09 01 a1 01 85 08")
+BPF_FIXED_VENDOR_DESCRIPTOR_PREFIX = bytes.fromhex("05 0d 09 02 a1 01 85 08")
 
 
 class DeviceDiscoveryError(RuntimeError):
     """Raised when the correct hidraw interface cannot be selected safely."""
 
 
+class DescriptorState(Enum):
+    ORIGINAL = "original descriptor"
+    HID_BPF_FIXED = "HID-BPF fixed descriptor"
+
+
 @dataclass(frozen=True, slots=True)
 class HidrawDevice:
     path: Path
     sysfs_path: Path
+    descriptor_state: DescriptorState
 
 
 def _read_uevent(path: Path) -> dict[str, str]:
@@ -35,8 +43,15 @@ def _read_uevent(path: Path) -> dict[str, str]:
 def find_vendor_hidraw(
     sys_class_hidraw: Path = Path("/sys/class/hidraw"),
     dev_root: Path = Path("/dev"),
+    *,
+    require_original: bool = False,
 ) -> HidrawDevice:
-    """Return the unique original vendor interface for the supported tablet."""
+    """Return the unique vendor interface for the supported tablet.
+
+    After HID-BPF attaches, the vendor-defined descriptor is replaced with a
+    digitizer/keypad descriptor. Both forms are recognized for diagnostics,
+    while raw capture can require the original descriptor explicitly.
+    """
 
     matches: list[HidrawDevice] = []
 
@@ -53,17 +68,28 @@ def find_vendor_hidraw(
 
         if properties.get("HID_ID", "").upper() != GS1333_HID_ID:
             continue
-        if not descriptor.startswith(VENDOR_DESCRIPTOR_PREFIX):
+
+        if descriptor.startswith(VENDOR_DESCRIPTOR_PREFIX):
+            descriptor_state = DescriptorState.ORIGINAL
+        elif descriptor.startswith(BPF_FIXED_VENDOR_DESCRIPTOR_PREFIX):
+            descriptor_state = DescriptorState.HID_BPF_FIXED
+        else:
+            continue
+        if require_original and descriptor_state is not DescriptorState.ORIGINAL:
             continue
 
         matches.append(
-            HidrawDevice(path=dev_root / entry.name, sysfs_path=entry.resolve())
+            HidrawDevice(
+                path=dev_root / entry.name,
+                sysfs_path=entry.resolve(),
+                descriptor_state=descriptor_state,
+            )
         )
 
     if not matches:
         raise DeviceDiscoveryError(
             "GS1333 vendor hidraw interface not found; connect/replug the tablet "
-            "and check whether HID-BPF has already replaced its descriptor"
+            "and inspect the HID-BPF state"
         )
     if len(matches) > 1:
         paths = ", ".join(str(match.path) for match in matches)

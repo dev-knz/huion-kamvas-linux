@@ -9,7 +9,8 @@ The preferred input path is upstream Linux support, not a permanent userspace
 driver:
 
 ```text
-GS1333 -> huion-switcher -> HID-BPF -> evdev/libinput -> compositor/app
+GS1333 hotplug -> upstream udev helpers -> HID-BPF -> evdev/libinput -> app
+                                      \-> huion-switcher selects vendor mode
 ```
 
 Linux now contains a device-specific HID-BPF program named
@@ -19,11 +20,11 @@ vendor descriptor, and exposes the top and bottom wheels as ordinary Linux
 relative input axes. This matches the tested firmware
 `HUION_M22c_250514`.
 
-As of 2026-08-27, Arch's `udev-hid-bpf 2.3.0.20260703-1` package does **not**
-ship that object in its [published file
-list](https://archlinux.org/packages/extra/x86_64/udev-hid-bpf/files/). Merely
-installing that package therefore does not prove that GS1333 support is loaded.
-See [Testing](docs/testing.md) for the exact checks.
+Arch's `udev-hid-bpf 2.3.0.20260703-2` package now ships both compatibility
+variants of the GS1333 program. Installing the package while the tablet is
+already connected does not replay the udev `add` event, however, so an installed
+object is not proof that it has been attached. See [Testing](docs/testing.md)
+for the exact hotplug and verification sequence.
 
 This repository currently provides a small, dependency-free Python diagnostic
 tool. It:
@@ -31,6 +32,7 @@ tool. It:
 - finds the correct vendor `hidraw` interface without assuming `hidraw0`;
 - parses only the 14-byte dial reports confirmed on real hardware;
 - timestamps adjacent identical reports without dropping them;
+- diagnoses the BPF objects, hwdb match, udev rules and loaded state;
 - is testable without a tablet attached.
 
 It deliberately does not add arbitrary debounce or a parallel `uinput` daemon
@@ -62,6 +64,7 @@ are installed. Do not change device nodes to mode `777`.
 ## Documentation
 
 - [Observed GS1333 protocol](docs/protocol.md)
+- [Architecture and hotplug](docs/architecture.md)
 - [Upstream and physical testing](docs/testing.md)
 
 ## Scope
