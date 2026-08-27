@@ -1,12 +1,11 @@
 # kamvas-bridge
 
-Experimental Linux support for the Huion Kamvas 13 Gen 3 (GS1333,
-`256c:2008`), with an initial focus on its two physical dials.
+Linux setup and diagnostics for the Huion Kamvas 13 Gen 3 (GS1333,
+`256c:2008`). The upstream dial path has been confirmed on physical hardware.
 
 ## Current direction
 
-The preferred input path is upstream Linux support, not a permanent userspace
-driver:
+The primary input path is the upstream Linux implementation:
 
 ```text
 GS1333 hotplug -> upstream udev helpers -> HID-BPF -> evdev/libinput -> app
@@ -20,6 +19,16 @@ vendor descriptor, and exposes the top and bottom wheels as ordinary Linux
 relative input axes. This matches the tested firmware
 `HUION_M22c_250514`.
 
+Physical testing on CachyOS Live confirmed that the kernel selects
+`0010-Huion__Kamvas13Gen3_bpf` and creates
+`HUION Huion Tablet_GS1333 Keypad` with:
+
+- top dial: `REL_WHEEL` ±1 and `REL_WHEEL_HI_RES` ±120;
+- bottom dial: `REL_HWHEEL` ±1 and `REL_HWHEEL_HI_RES` ±120.
+
+The HID-BPF program already parses the vendor reports correctly. This project
+will not duplicate that work in a normal userspace input daemon.
+
 Arch's `udev-hid-bpf 2.3.0.20260703-2` package now ships both compatibility
 variants of the GS1333 program. Installing the package while the tablet is
 already connected does not replay the udev `add` event, however, so an installed
@@ -29,16 +38,18 @@ for the exact hotplug and verification sequence.
 This repository currently provides a small, dependency-free Python diagnostic
 tool. It:
 
-- finds the correct vendor `hidraw` interface without assuming `hidraw0`;
-- parses only the 14-byte dial reports confirmed on real hardware;
-- timestamps adjacent identical reports without dropping them;
-- diagnoses the BPF objects, hwdb match, udev rules and loaded state;
+- checks the installed `udev-hid-bpf` package and GS1333 object files;
+- diagnoses hwdb matching, udev rules and the loaded BPF state;
+- verifies `huion-switcher` and its udev rule;
+- verifies that the GS1333 Keypad exposes vertical and horizontal wheel axes;
+- retains raw-report capture for fallback investigation;
 - is testable without a tablet attached.
 
-It deliberately does not add arbitrary debounce or a parallel `uinput` daemon
-yet. First we will verify the upstream HID-BPF path and measure the apparent
-duplicate reports. A userspace `hidraw -> uinput` bridge remains a fallback if
-upstream cannot satisfy the first scroll milestone.
+The next priorities are installation/configuration assistance, stronger support
+detection, remapping and profiles, followed later by a GUI. A userspace
+`hidraw -> uinput` bridge remains a compatibility fallback for distributions or
+kernels that cannot run the upstream path. It is no longer the primary design,
+and no arbitrary debounce is implemented.
 
 ## Development
 
@@ -59,7 +70,8 @@ PYTHONPATH=src python -m kamvas_bridge capture --count 20
 ```
 
 The capture command may require temporary root access until device permissions
-are installed. Do not change device nodes to mode `777`.
+are installed. It is for fallback investigation only. Do not change device
+nodes to mode `777`.
 
 ## Documentation
 
@@ -70,8 +82,8 @@ are installed. Do not change device nodes to mode `777`.
 ## Scope
 
 Only the Huion Kamvas 13 Gen 3 / GS1333 (`256c:2008`) is supported. Buttons,
-dial-center presses, profiles, GUI, service setup, and Arch packaging are not
-implemented yet.
+dial-center presses, profiles, remapping UI, GUI, automatic installation, and
+distribution packaging are not implemented yet.
 
 ## License
 

@@ -6,9 +6,12 @@ from unittest.mock import patch
 from kamvas_bridge.diagnostics import (
     _bpf_match_properties,
     _gs1333_hid_devices,
+    _keypad_devices,
     _matching_hwdb_files,
     _matching_paths,
+    _parse_capability_bitmap,
     _parse_properties,
+    _udev_hid_bpf_package,
 )
 
 
@@ -76,6 +79,49 @@ class DiagnosticHelpersTests(unittest.TestCase):
             {"HID_BPF_S_004": "0010-Huion__Kamvas13Gen3.bpf.o"},
         )
         self.assertEqual(properties["OTHER"], "value=with=equals")
+
+    def test_parses_keypad_relative_capabilities(self) -> None:
+        capabilities = _parse_capability_bitmap("1940\n")
+
+        self.assertTrue({6, 8, 11, 12} <= capabilities)
+
+    def test_queries_udev_hid_bpf_package(self) -> None:
+        with (
+            patch(
+                "kamvas_bridge.diagnostics.shutil.which",
+                side_effect=lambda command: (
+                    "/usr/bin/pacman" if command == "pacman" else None
+                ),
+            ),
+            patch(
+                "kamvas_bridge.diagnostics._run_command",
+                return_value="udev-hid-bpf 2.3.0.20260703-2",
+            ) as run_command,
+        ):
+            package = _udev_hid_bpf_package()
+
+        self.assertEqual(package, "udev-hid-bpf 2.3.0.20260703-2")
+        run_command.assert_called_once_with(
+            ["/usr/bin/pacman", "-Q", "udev-hid-bpf"]
+        )
+
+    def test_finds_keypad_and_its_relative_capabilities(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            keypad = root / "event7" / "device"
+            (keypad / "capabilities").mkdir(parents=True)
+            (keypad / "name").write_text(
+                "HUION Huion Tablet_GS1333 Keypad\n", encoding="utf-8"
+            )
+            (keypad / "capabilities" / "rel").write_text(
+                "1940\n", encoding="ascii"
+            )
+
+            devices = _keypad_devices(root, Path("/test-input"))
+
+            self.assertEqual(len(devices), 1)
+            self.assertEqual(devices[0].path, Path("/test-input/event7"))
+            self.assertTrue({6, 8, 11, 12} <= devices[0].relative_codes)
 
 
 if __name__ == "__main__":

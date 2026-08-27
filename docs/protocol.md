@@ -42,9 +42,16 @@ The capture tool therefore records monotonic timestamps and marks
 captures from controlled slow and fast rotations before deciding whether the
 cause is firmware repetition, detent resolution, or another state transition.
 
+This question applies only to the `hidraw -> uinput` compatibility fallback.
+Physical testing confirmed that the upstream HID-BPF path emits correct evdev
+wheel steps, so normal project operation must not parse or deduplicate these
+vendor reports again in userspace.
+
 ## Upstream comparison
 
 The upstream Linux HID-BPF program independently documents the wheel as a
 vendor subtype in the high nibble of byte 1, dial index in byte 3, and direction
 in byte 5. This agrees with the reports above. It converts clockwise to `+1`
-and counterclockwise to `-1`.
+and counterclockwise to `-1`. Physical testing confirmed vertical wheel events
+for the top dial and horizontal wheel events for the bottom dial, including
+their high-resolution ±120 counterparts.

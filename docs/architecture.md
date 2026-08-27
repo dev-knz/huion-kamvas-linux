@@ -32,29 +32,60 @@ already present. After installing or changing either rule, reload udev and
 physically unplug/replug the tablet. On future boots and hotplugs, udev handles
 the sequence automatically.
 
+## Physically confirmed result
+
+The complete path was validated on a GS1333 in CachyOS Live:
+
+```text
+GS1333 -> huion-switcher -> 0010-Huion__Kamvas13Gen3_bpf -> evdev
+```
+
+The resulting `HUION Huion Tablet_GS1333 Keypad` device exposed and emitted:
+
+| Physical control | Normal-resolution event | High-resolution event |
+| --- | --- | --- |
+| Top dial | `REL_WHEEL` ±1 | `REL_WHEEL_HI_RES` ±120 |
+| Bottom dial | `REL_HWHEEL` ±1 | `REL_HWHEEL_HI_RES` ±120 |
+
+This establishes the upstream path as the project architecture for the dials.
+There is no reason to decode the same GS1333 vendor packets again in a normal
+userspace daemon.
+
 ## Why systemd is not used yet
 
 A daemon must not run directly from a udev rule, but these two short helpers are
 an appropriate udev use. A custom systemd unit would duplicate upstream device
 matching and introduce ordering and restart behavior we do not currently need.
 
-If clean-boot testing proves that the upstream rules are unreliable, the next
-safe design would be a systemd oneshot service activated by a device unit. That
-decision requires logs from a real failure after both rules were installed
-before the tablet was connected.
+The upstream udev path succeeded after installing both components and physically
+reconnecting the tablet. A custom unit should only be reconsidered if a specific
+distribution demonstrates a reproducible ordering or hotplug failure.
+
+## Project priorities
+
+Development should proceed in this order:
+
+1. diagnose the complete upstream path;
+2. guide or automate safe `huion-switcher` installation and configuration;
+3. verify `udev-hid-bpf`, its objects, hwdb and rules;
+4. detect kernel/distribution support and present actionable recovery steps;
+5. add remapping and profiles using normal evdev/compositor facilities;
+6. provide a GUI after the configuration model is stable.
 
 ## Userspace fallback
 
-The fallback remains:
+For a kernel or distribution without usable HID-BPF support, the fallback
+remains:
 
 ```text
 vendor hidraw -> parser -> evidence-based deduplication -> uinput -> libinput
 ```
 
-The existing parser and timestamped capture tool preserve this option. We will
-only add the `uinput` output after either the upstream path fails or we need
-remapping that normal compositor/application facilities cannot provide.
+The existing parser and timestamped capture tool preserve this option. A
+`uinput` output layer should only be implemented for a demonstrated
+compatibility gap; remapping alone is not a reason to duplicate upstream packet
+parsing.
 
 No time-based debounce is currently implemented. Adjacent equal packets remain
-observable so that slow and fast physical captures can establish their actual
-semantics.
+observable in fallback captures if a future unsupported system requires that
+investigation.

@@ -81,17 +81,24 @@ sudo udev-hid-bpf list-loaded
 
 A successful result has all of the following:
 
-- both Kamvas object files are present;
+- the `udev-hid-bpf` package and both Kamvas object files are present;
 - the HID-BPF udev rule and GS1333 hwdb entry are found;
-- `huion-switcher`, its rule, and `HUION_FIRMWARE_ID` are found;
-- the vendor descriptor is reported as `HID-BPF fixed descriptor`;
+- `huion-switcher` and its rule are found;
 - a Kamvas object is pinned below `/sys/fs/bpf/hid`.
+- `HUION Huion Tablet_GS1333 Keypad` exposes `REL_WHEEL` and `REL_HWHEEL`.
 
-Use `evtest` on the device whose name ends in `GS1333 Keypad`. The confirmed
-capabilities are `REL_WHEEL`, `REL_WHEEL_HI_RES`, `REL_HWHEEL`, and
-`REL_HWHEEL_HI_RES`. The first milestone is that the top dial emits vertical
-wheel events and scrolls a focused browser page; the bottom dial is horizontal
-pan.
+The original vendor `hidraw` interface and `HUION_FIRMWARE_ID` may no longer be
+visible after HID-BPF has rebound the device. Their absence is informational
+once the pinned BPF and working Keypad prove that the upstream path is active.
+
+Physical testing confirmed the following `evtest` output from the device whose
+name ends in `GS1333 Keypad`:
+
+- top dial: `REL_WHEEL` ±1 and `REL_WHEEL_HI_RES` ±120;
+- bottom dial: `REL_HWHEEL` ±1 and `REL_HWHEEL_HI_RES` ±120.
+
+This milestone is complete. Repeating it is only necessary when validating a
+new kernel, distribution package or installer change.
 
 ## 4. Diagnose an automatic-load failure
 
@@ -147,16 +154,17 @@ These tests cover the four confirmed dial packets, invalid values, packet
 length, discovery before and after HID-BPF descriptor fixup, and diagnostic
 matching without requiring a tablet.
 
-## 6. Preserve the hidraw fallback evidence
+## 6. Preserve the hidraw fallback
 
-Use raw capture only when HID-BPF is not attached and the original vendor
-descriptor is still present:
+The upstream path is the supported default. Use raw capture only on a system
+where HID-BPF cannot be attached and the original vendor descriptor remains:
 
 ```bash
 sudo env PYTHONPATH=src python -m kamvas_bridge capture --count 32
 ```
 
-Perform exactly this sequence, with about two seconds between groups:
+If fallback development becomes necessary, capture this controlled sequence
+with about two seconds between groups:
 
 1. Top dial clockwise: four deliberately slow detents.
 2. Top dial counterclockwise: four deliberately slow detents.
@@ -169,6 +177,5 @@ timings are evidence needed for a correct filter. The capture command now
 refuses automatic selection of an HID-BPF-fixed interface because evdev is the
 correct consumer after attachment.
 
-Do not add `sleep()` or time-based debounce to the read loop. Sleeping can hide
-reports and cannot distinguish firmware duplicates from legitimate fast
-rotation.
+Do not add `sleep()` or time-based debounce to the read loop. Do not use this
+parser in parallel with a working HID-BPF path.

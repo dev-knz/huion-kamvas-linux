@@ -17,7 +17,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("doctor", help="inspect hidraw and HID-BPF state")
+    subparsers.add_parser("doctor", help="verify the upstream GS1333 input path")
 
     capture_parser = subparsers.add_parser(
         "capture", help="timestamp vendor reports for duplicate analysis"
