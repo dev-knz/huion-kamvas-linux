@@ -12,6 +12,7 @@ from kamvas_bridge.diagnostics import (
     _parse_capability_bitmap,
     _parse_properties,
     _udev_hid_bpf_package,
+    _virtual_pointer_devices,
 )
 
 
@@ -116,12 +117,37 @@ class DiagnosticHelpersTests(unittest.TestCase):
             (keypad / "capabilities" / "rel").write_text(
                 "1940\n", encoding="ascii"
             )
+            (keypad / "id").mkdir()
+            (keypad / "id" / "vendor").write_text("256c\n", encoding="ascii")
+            (keypad / "id" / "product").write_text("2008\n", encoding="ascii")
 
             devices = _keypad_devices(root, Path("/test-input"))
 
             self.assertEqual(len(devices), 1)
             self.assertEqual(devices[0].path, Path("/test-input/event7"))
             self.assertTrue({6, 8, 11, 12} <= devices[0].relative_codes)
+
+    def test_finds_virtual_pointer_without_matching_it_as_keypad(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pointer = root / "event30" / "device"
+            (pointer / "capabilities").mkdir(parents=True)
+            (pointer / "id").mkdir()
+            (pointer / "name").write_text(
+                "kamvas-bridge Virtual Pointer\n", encoding="utf-8"
+            )
+            (pointer / "capabilities" / "rel").write_text(
+                "143\n", encoding="ascii"
+            )
+            (pointer / "id" / "vendor").write_text("1209\n", encoding="ascii")
+            (pointer / "id" / "product").write_text("4b42\n", encoding="ascii")
+
+            virtual = _virtual_pointer_devices(root, Path("/test-input"))
+            keypads = _keypad_devices(root, Path("/test-input"))
+
+            self.assertEqual(len(virtual), 1)
+            self.assertEqual(virtual[0].path, Path("/test-input/event30"))
+            self.assertEqual(keypads, [])
 
 
 if __name__ == "__main__":

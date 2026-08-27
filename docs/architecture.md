@@ -7,13 +7,15 @@ USB hotplug
   +-> HID add ------> hwdb + udev-hid-bpf ----> attach GS1333 program
   +-> hidraw add/bind ------> huion-switcher -> select vendor mode
 
- vendor reports -> attached HID-BPF -> kernel wheel and keypad events
-  -> evdev/libinput
+ vendor reports -> attached HID-BPF -> kernel Keypad events
+  -> evdev/libinput tablet-pad dials
+  -> kamvas-bridge normalized-event remapper
+  -> uinput virtual pointer/keyboard outputs
+  -> libinput pointer scroll
   -> Hyprland, GNOME, KDE, Sway and applications
 ```
 
-This path does not need a long-running `kamvas-bridge` daemon or a systemd
-service. Both upstream helpers are finite programs launched for device events:
+The two upstream helpers are finite programs launched for device events:
 
 - `80-huion-switcher.rules` invokes `huion-switcher` for a Huion hidraw device
   and imports `HUION_FIRMWARE_ID` and `HUION_MAGIC_BYTES` into udev;
@@ -47,19 +49,31 @@ The resulting `HUION Huion Tablet_GS1333 Keypad` device exposed and emitted:
 | Top dial | `REL_WHEEL` ±1 | `REL_WHEEL_HI_RES` ±120 |
 | Bottom dial | `REL_HWHEEL` ±1 | `REL_HWHEEL_HI_RES` ±120 |
 
-This establishes the upstream path as the project architecture for the dials.
-There is no reason to decode the same GS1333 vendor packets again in a normal
-userspace daemon.
+Libinput correctly converts these into `TABLET_PAD_DIAL` events for dial 0 and
+dial 1. That validates the upstream decoder, but tablet-pad dials are not
+pointer axes and therefore do not scroll Firefox automatically.
 
-## Why systemd is not used yet
+The main userspace component now translates the already normalized
+low-resolution `REL_WHEEL` and `REL_HWHEEL` events into an uinput virtual
+pointer. It ignores their high-resolution companions to avoid duplicate output.
+The architecture reserves a virtual keyboard for future configurable actions,
+but the initial implementation creates only the pointer required by the dial
+milestone. There is still no reason to decode GS1333 vendor packets again in
+the normal userspace path.
 
-A daemon must not run directly from a udev rule, but these two short helpers are
-an appropriate udev use. A custom systemd unit would duplicate upstream device
-matching and introduce ordering and restart behavior we do not currently need.
+## Process model
 
-The upstream udev path succeeded after installing both components and physically
-reconnecting the tablet. A custom unit should only be reconsidered if a specific
-distribution demonstrates a reproducible ordering or hotplug failure.
+The remapper is a long-running user-session process. It scans for the Keypad by
+device name plus USB vendor/product IDs, watches reconnects, and never matches
+its differently named virtual pointer. It runs in the foreground for the first
+Firefox milestone. A systemd user service is the next step after this behavior
+is physically validated.
+
+The udev permission rule grants the active local session access to the specific
+GS1333 event device, `/dev/uinput`, and the identified virtual pointer event
+node that `python-evdev` opens during construction. Access to uinput permits
+input injection, so it is deliberately scoped with `TAG+="uaccess"` instead of
+a world-writable device mode.
 
 ## Project priorities
 
@@ -70,8 +84,9 @@ Development should proceed in this order:
    (`setup --dry-run` and `setup --apply` now cover CachyOS/Arch);
 3. verify `udev-hid-bpf`, its objects, hwdb and rules;
 4. detect kernel/distribution support and present actionable recovery steps;
-5. add remapping and profiles using normal evdev/compositor facilities;
-6. provide a GUI after the configuration model is stable.
+5. physically validate dial 0 scrolling Firefox through the virtual pointer;
+6. add configurable dial/button mappings and profiles;
+7. add a systemd user service and then a GUI.
 
 ## Userspace fallback
 
@@ -83,9 +98,9 @@ vendor hidraw -> parser -> evidence-based deduplication -> uinput -> libinput
 ```
 
 The existing parser and timestamped capture tool preserve this option. A
-`uinput` output layer should only be implemented for a demonstrated
-compatibility gap; remapping alone is not a reason to duplicate upstream packet
-parsing.
+hidraw-backed output path should only be implemented for a demonstrated
+compatibility gap; the normal uinput remapper is not a reason to duplicate
+upstream packet parsing.
 
 No time-based debounce is currently implemented. Adjacent equal packets remain
 observable in fallback captures if a future unsupported system requires that

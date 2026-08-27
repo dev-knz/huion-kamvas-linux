@@ -8,20 +8,26 @@ from pathlib import Path
 from .capture import capture
 from .device import DeviceDiscoveryError, find_vendor_hidraw
 from .diagnostics import doctor
+from .remapper import RemapperError, run_remapper
 from .setup import SetupError, run_setup
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kamvas-bridge",
-        description="Huion Kamvas 13 Gen 3 input diagnostics",
+        description="Huion Kamvas 13 Gen 3 setup, diagnostics and dial remapping",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("doctor", help="verify the upstream GS1333 input path")
+    subparsers.add_parser(
+        "doctor", help="verify upstream and remapper readiness"
+    )
+    subparsers.add_parser(
+        "remap", help="translate GS1333 tablet-pad dials to pointer scrolling"
+    )
 
     setup_parser = subparsers.add_parser(
-        "setup", help="plan or apply CachyOS/Arch upstream setup"
+        "setup", help="plan or apply CachyOS/Arch setup and permissions"
     )
     setup_mode = setup_parser.add_mutually_exclusive_group()
     setup_mode.add_argument(
@@ -60,6 +66,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         return doctor()
+
+    if args.command == "remap":
+        try:
+            return run_remapper()
+        except RemapperError as error:
+            raise SystemExit(f"remapper failed: {error}") from error
 
     if args.command == "setup":
         if args.yes and not args.apply:

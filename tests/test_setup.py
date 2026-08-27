@@ -6,8 +6,10 @@ from pathlib import Path
 from unittest.mock import call, patch
 
 from kamvas_bridge.setup import (
+    REMAPPER_RULE_SOURCE,
     SetupError,
     _is_arch_family,
+    _install_remapper_runtime,
     _read_os_release,
     _verify_packaged_bpf,
     run_setup,
@@ -95,6 +97,7 @@ class SetupTests(unittest.TestCase):
             patch("kamvas_bridge.setup.os.geteuid", return_value=1000, create=True),
             patch("kamvas_bridge.setup._require_command"),
             patch("kamvas_bridge.setup._verify_packaged_bpf"),
+            patch("kamvas_bridge.setup._install_remapper_runtime"),
             patch("kamvas_bridge.setup._run_checked") as run_checked,
             redirect_stdout(StringIO()),
         ):
@@ -118,10 +121,22 @@ class SetupTests(unittest.TestCase):
                         "pkgconf",
                         "libusb",
                         "systemd-libs",
+                        "python-evdev",
                     ]
                 ),
                 call(["sudo", "systemd-hwdb", "update"]),
                 call(["sudo", "udevadm", "control", "--reload"]),
+                call(["sudo", "modprobe", "uinput"]),
+                call(
+                    [
+                        "sudo",
+                        "udevadm",
+                        "trigger",
+                        "--action=add",
+                        "/sys/class/misc/uinput",
+                    ]
+                ),
+                call(["sudo", "udevadm", "settle"]),
             ],
         )
 
@@ -135,6 +150,7 @@ class SetupTests(unittest.TestCase):
             patch("kamvas_bridge.setup.os.geteuid", return_value=1000, create=True),
             patch("kamvas_bridge.setup._require_command"),
             patch("kamvas_bridge.setup._verify_packaged_bpf"),
+            patch("kamvas_bridge.setup._install_remapper_runtime"),
             patch("kamvas_bridge.setup._run_checked"),
             patch("kamvas_bridge.setup._install_switcher") as install_switcher,
             redirect_stdout(StringIO()),
@@ -168,6 +184,28 @@ class SetupTests(unittest.TestCase):
                 patch("kamvas_bridge.setup.HID_BPF_HWDB_ROOTS", (hwdb,)),
             ):
                 _verify_packaged_bpf()
+
+    def test_installs_packaged_remapper_permissions(self) -> None:
+        with patch("kamvas_bridge.setup._run_checked") as run_checked:
+            _install_remapper_runtime()
+
+        self.assertEqual(len(run_checked.call_args_list), 2)
+        first_command = run_checked.call_args_list[0].args[0]
+        second_command = run_checked.call_args_list[1].args[0]
+        self.assertEqual(first_command[:3], ["sudo", "install", "-Dm644"])
+        self.assertEqual(first_command[-1], "/etc/udev/rules.d/70-kamvas-bridge.rules")
+        self.assertEqual(second_command[:3], ["sudo", "install", "-Dm644"])
+        self.assertEqual(
+            second_command[-1], "/etc/modules-load.d/kamvas-bridge.conf"
+        )
+
+    def test_remapper_rule_covers_source_uinput_and_virtual_event(self) -> None:
+        rule = REMAPPER_RULE_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn("HUION Huion Tablet_GS1333 Keypad", rule)
+        self.assertIn("kamvas-bridge Virtual Pointer", rule)
+        self.assertIn('KERNEL=="uinput"', rule)
+        self.assertNotIn('MODE="0666"', rule)
 
 
 if __name__ == "__main__":

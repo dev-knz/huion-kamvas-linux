@@ -5,13 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kamvas-bridge"
 version = "0.1.0"
-description = "Linux setup diagnostics for the Huion Kamvas 13 Gen 3"
+description = "Linux setup, diagnostics and dial remapping for the Huion Kamvas 13 Gen 3"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["evdev>=1.9"]
 
 [project.scripts]
 kamvas-bridge = "kamvas_bridge.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+kamvas_bridge = ["data/*.rules", "data/*.conf"]

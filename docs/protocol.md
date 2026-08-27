@@ -44,8 +44,9 @@ cause is firmware repetition, detent resolution, or another state transition.
 
 This question applies only to the `hidraw -> uinput` compatibility fallback.
 Physical testing confirmed that the upstream HID-BPF path emits correct evdev
-wheel steps, so normal project operation must not parse or deduplicate these
-vendor reports again in userspace.
+wheel steps and libinput tablet-pad dial events. The main remapper translates
+those normalized events to a virtual pointer, so normal project operation must
+not parse or deduplicate vendor reports again in userspace.
 
 ## Upstream comparison
 

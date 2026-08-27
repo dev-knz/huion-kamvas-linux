@@ -19,14 +19,14 @@ On a Live image, synchronize the package databases before installing anything:
 
 ```bash
 sudo pacman -Sy
-sudo pacman -S --needed git python udev-hid-bpf bpf
+sudo pacman -S --needed git python python-evdev udev-hid-bpf bpf
 ```
 
 On an installed, regularly updated system, use a full upgrade instead:
 
 ```bash
 sudo pacman -Syu
-sudo pacman -S --needed git python udev-hid-bpf bpf
+sudo pacman -S --needed git python python-evdev udev-hid-bpf bpf
 ```
 
 Do not use `pacman -Sy` by itself on an installed Arch/CachyOS system because it
@@ -84,10 +84,10 @@ Then physically unplug the tablet, wait two seconds, and reconnect it. Do not
 substitute `udevadm trigger` for this first test: the USB reconnect also resets
 the tablet's firmware mode and gives both upstream rules a clean event sequence.
 
-From the `kamvas-bridge` repository, verify the entire chain:
+From the `kamvas-bridge` repository, verify the upstream chain:
 
 ```bash
-sudo env PYTHONPATH=src python -m kamvas_bridge doctor
+PYTHONPATH=src python -m kamvas_bridge doctor
 sudo udev-hid-bpf list-devices --with-bpfs
 sudo udev-hid-bpf list-loaded
 ```
@@ -110,8 +110,15 @@ name ends in `GS1333 Keypad`:
 - top dial: `REL_WHEEL` ±1 and `REL_WHEEL_HI_RES` ±120;
 - bottom dial: `REL_HWHEEL` ±1 and `REL_HWHEEL_HI_RES` ±120.
 
-This milestone is complete. Repeating it is only necessary when validating a
-new kernel, distribution package or installer change.
+This upstream milestone is complete. The remaining application milestone is:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge remap
+```
+
+With the remapper running, rotating dial 0 must scroll a focused Firefox page.
+Run `doctor` in a second terminal; it distinguishes `upstream HID path: READY`
+from `remapper: READY`.
 
 ## 4. Diagnose an automatic-load failure
 

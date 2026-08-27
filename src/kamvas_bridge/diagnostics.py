@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 
 from .device import DeviceDiscoveryError, find_vendor_hidraw
@@ -20,6 +22,11 @@ INPUT_CLASS_ROOT = Path("/sys/class/input")
 INPUT_DEVICE_ROOT = Path("/dev/input")
 
 KEYPAD_NAME = "HUION Huion Tablet_GS1333 Keypad"
+KEYPAD_VENDOR_ID = 0x256C
+KEYPAD_PRODUCT_ID = 0x2008
+VIRTUAL_POINTER_NAME = "kamvas-bridge Virtual Pointer"
+VIRTUAL_VENDOR_ID = 0x1209
+VIRTUAL_PRODUCT_ID = 0x4B42
 REL_CAPABILITY_NAMES = {
     8: "REL_WHEEL",
     11: "REL_WHEEL_HI_RES",
@@ -27,6 +34,16 @@ REL_CAPABILITY_NAMES = {
     12: "REL_HWHEEL_HI_RES",
 }
 REQUIRED_KEYPAD_REL_CODES = frozenset((6, 8))
+
+REMAPPER_RULE_PATHS = (
+    Path("/etc/udev/rules.d/70-kamvas-bridge.rules"),
+    Path("/usr/lib/udev/rules.d/70-kamvas-bridge.rules"),
+)
+MODULES_LOAD_PATHS = (
+    Path("/etc/modules-load.d/kamvas-bridge.conf"),
+    Path("/usr/lib/modules-load.d/kamvas-bridge.conf"),
+)
+UINPUT_PATH = Path("/dev/uinput")
 
 HID_BPF_RULE_PATHS = (
     Path("/etc/udev/rules.d/81-hid-bpf.rules"),
@@ -56,6 +73,8 @@ class KeypadDevice:
     path: Path
     sysfs_path: Path
     relative_codes: frozenset[int]
+    vendor_id: int
+    product_id: int
 
 
 def _normalized_name(path: Path) -> str:
@@ -158,7 +177,10 @@ def _parse_capability_bitmap(value: str) -> frozenset[int]:
     return frozenset(codes)
 
 
-def _keypad_devices(
+def _input_devices_named(
+    name_to_match: str,
+    vendor_to_match: int,
+    product_to_match: int,
     root: Path = INPUT_CLASS_ROOT,
     dev_root: Path = INPUT_DEVICE_ROOT,
 ) -> list[KeypadDevice]:
@@ -174,18 +196,56 @@ def _keypad_devices(
             relative = (event / "device" / "capabilities" / "rel").read_text(
                 encoding="ascii", errors="replace"
             )
-        except OSError:
+            vendor_id = int(
+                (event / "device" / "id" / "vendor").read_text().strip(), 16
+            )
+            product_id = int(
+                (event / "device" / "id" / "product").read_text().strip(), 16
+            )
+        except (OSError, ValueError):
             continue
-        if name.strip() != KEYPAD_NAME:
+        if (
+            name.strip() != name_to_match
+            or vendor_id != vendor_to_match
+            or product_id != product_to_match
+        ):
             continue
         devices.append(
             KeypadDevice(
                 path=dev_root / event.name,
                 sysfs_path=event,
                 relative_codes=_parse_capability_bitmap(relative),
+                vendor_id=vendor_id,
+                product_id=product_id,
             )
         )
     return devices
+
+
+def _keypad_devices(
+    root: Path = INPUT_CLASS_ROOT,
+    dev_root: Path = INPUT_DEVICE_ROOT,
+) -> list[KeypadDevice]:
+    return _input_devices_named(
+        KEYPAD_NAME,
+        KEYPAD_VENDOR_ID,
+        KEYPAD_PRODUCT_ID,
+        root,
+        dev_root,
+    )
+
+
+def _virtual_pointer_devices(
+    root: Path = INPUT_CLASS_ROOT,
+    dev_root: Path = INPUT_DEVICE_ROOT,
+) -> list[KeypadDevice]:
+    return _input_devices_named(
+        VIRTUAL_POINTER_NAME,
+        VIRTUAL_VENDOR_ID,
+        VIRTUAL_PRODUCT_ID,
+        root,
+        dev_root,
+    )
 
 
 def _udev_properties(*, path: Path | None = None, name: Path | None = None) -> dict[str, str]:
@@ -329,7 +389,48 @@ def doctor() -> int:
     if switcher is None or switcher_rule is None:
         print("next: install upstream huion-switcher and its 80-huion-switcher.rules file")
 
-    if problems == 0:
-        print("upstream dial path: READY")
+    upstream_problems = problems
+    print(
+        "upstream HID path: "
+        + ("READY" if upstream_problems == 0 else "NOT READY")
+    )
 
-    return 0 if problems == 0 else 1
+    remapper_problems = 0
+    remapper_rule = _first_existing(REMAPPER_RULE_PATHS)
+    modules_load = _first_existing(MODULES_LOAD_PATHS)
+    print(f"kamvas-bridge udev rule: {remapper_rule or 'NOT FOUND'}")
+    print(f"uinput modules-load config: {modules_load or 'NOT FOUND'}")
+    if remapper_rule is None or modules_load is None:
+        remapper_problems += 1
+
+    evdev_available = find_spec("evdev") is not None
+    print(f"python-evdev: {'FOUND' if evdev_available else 'NOT FOUND'}")
+    if not evdev_available:
+        remapper_problems += 1
+
+    source_readable = any(os.access(keypad.path, os.R_OK) for keypad in keypads)
+    print(f"GS1333 Keypad readable: {'yes' if source_readable else 'no'}")
+    if keypads and not source_readable:
+        remapper_problems += 1
+
+    uinput_writable = UINPUT_PATH.exists() and os.access(UINPUT_PATH, os.W_OK)
+    print(f"uinput writable: {'yes' if uinput_writable else 'no'}")
+    if not uinput_writable:
+        remapper_problems += 1
+
+    virtual_pointers = _virtual_pointer_devices()
+    virtual_ready = any(
+        REQUIRED_KEYPAD_REL_CODES <= pointer.relative_codes
+        for pointer in virtual_pointers
+    )
+    if virtual_pointers:
+        for pointer in virtual_pointers:
+            print(f"virtual pointer: {pointer.path} ({VIRTUAL_POINTER_NAME})")
+    else:
+        print("virtual pointer: NOT FOUND (start kamvas-bridge remap)")
+    if not virtual_ready:
+        remapper_problems += 1
+
+    print("remapper: " + ("READY" if remapper_problems == 0 else "NOT READY"))
+
+    return 0 if upstream_problems == 0 and remapper_problems == 0 else 1

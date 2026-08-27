@@ -7,7 +7,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .diagnostics import (
     BPF_FIRMWARE_ROOTS,
@@ -22,10 +22,15 @@ from .diagnostics import (
 
 OS_RELEASE_PATH = Path("/etc/os-release")
 HUION_SWITCHER_REPOSITORY = "https://github.com/whot/huion-switcher.git"
-HUION_SWITCHER_BINARY_TARGET = Path("/usr/lib/udev/huion-switcher")
-HUION_SWITCHER_RULE_TARGET = Path(
+HUION_SWITCHER_BINARY_TARGET = PurePosixPath("/usr/lib/udev/huion-switcher")
+HUION_SWITCHER_RULE_TARGET = PurePosixPath(
     "/etc/udev/rules.d/80-huion-switcher.rules"
 )
+PACKAGE_DATA_ROOT = Path(__file__).with_name("data")
+REMAPPER_RULE_SOURCE = PACKAGE_DATA_ROOT / "70-kamvas-bridge.rules"
+REMAPPER_RULE_TARGET = PurePosixPath("/etc/udev/rules.d/70-kamvas-bridge.rules")
+MODULES_LOAD_SOURCE = PACKAGE_DATA_ROOT / "kamvas-bridge.conf"
+MODULES_LOAD_TARGET = PurePosixPath("/etc/modules-load.d/kamvas-bridge.conf")
 
 ARCH_PACKAGES = (
     "udev-hid-bpf",
@@ -36,6 +41,7 @@ ARCH_PACKAGES = (
     "pkgconf",
     "libusb",
     "systemd-libs",
+    "python-evdev",
 )
 
 
@@ -99,9 +105,13 @@ def _print_plan(*, switcher_installed: bool) -> None:
         step += 1
         print(f"  {step}. install {HUION_SWITCHER_RULE_TARGET} with mode 0644")
         step += 1
+    print(f"  {step}. install active-session permissions for GS1333 and uinput")
+    step += 1
+    print(f"  {step}. configure and load the uinput kernel module")
+    step += 1
     print(f"  {step}. update the systemd hwdb and reload udev rules")
     step += 1
-    print(f"  {step}. physically unplug and reconnect the tablet, then run doctor")
+    print(f"  {step}. physically reconnect the tablet, then start the remapper")
 
 
 def _run_checked(command: list[str], *, cwd: Path | None = None) -> None:
@@ -162,6 +172,31 @@ def _install_switcher() -> None:
         )
 
 
+def _install_remapper_runtime() -> None:
+    for source in (REMAPPER_RULE_SOURCE, MODULES_LOAD_SOURCE):
+        if not source.is_file():
+            raise SetupError(f"packaged setup file not found: {source}")
+
+    _run_checked(
+        [
+            "sudo",
+            "install",
+            "-Dm644",
+            str(REMAPPER_RULE_SOURCE),
+            str(REMAPPER_RULE_TARGET),
+        ]
+    )
+    _run_checked(
+        [
+            "sudo",
+            "install",
+            "-Dm644",
+            str(MODULES_LOAD_SOURCE),
+            str(MODULES_LOAD_TARGET),
+        ]
+    )
+
+
 def _confirm() -> bool:
     try:
         response = input("Apply this system setup? [y/N] ")
@@ -205,10 +240,16 @@ def run_setup(*, apply: bool = False, assume_yes: bool = False) -> int:
         _require_command("cargo")
         _install_switcher()
 
+    _install_remapper_runtime()
     _run_checked(["sudo", "systemd-hwdb", "update"])
     _run_checked(["sudo", "udevadm", "control", "--reload"])
+    _run_checked(["sudo", "modprobe", "uinput"])
+    _run_checked(
+        ["sudo", "udevadm", "trigger", "--action=add", "/sys/class/misc/uinput"]
+    )
+    _run_checked(["sudo", "udevadm", "settle"])
 
     print("setup files installed successfully")
     print("next: physically unplug the tablet, wait two seconds, and reconnect it")
-    print("then: sudo env PYTHONPATH=src python -m kamvas_bridge doctor")
+    print("then: PYTHONPATH=src python -m kamvas_bridge remap")
     return 0
