@@ -66,7 +66,8 @@ distribution demonstrates a reproducible ordering or hotplug failure.
 Development should proceed in this order:
 
 1. diagnose the complete upstream path;
-2. guide or automate safe `huion-switcher` installation and configuration;
+2. guide or automate safe `huion-switcher` installation and configuration
+   (`setup --dry-run` and `setup --apply` now cover CachyOS/Arch);
 3. verify `udev-hid-bpf`, its objects, hwdb and rules;
 4. detect kernel/distribution support and present actionable recovery steps;
 5. add remapping and profiles using normal evdev/compositor facilities;

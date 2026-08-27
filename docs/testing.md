@@ -1,5 +1,18 @@
 # Testing on CachyOS
 
+## Automated setup
+
+The recommended path from a repository checkout is:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge setup --dry-run
+PYTHONPATH=src python -m kamvas_bridge setup --apply
+```
+
+Run it as the normal Live or desktop user, not from a root shell. The sections
+below document the individual operations performed by the installer and remain
+useful for manual recovery.
+
 ## 1. Install the packaged HID-BPF support
 
 On a Live image, synchronize the package databases before installing anything:

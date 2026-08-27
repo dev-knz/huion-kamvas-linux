@@ -69,6 +69,25 @@ PYTHONPATH=src python -m kamvas_bridge doctor
 PYTHONPATH=src python -m kamvas_bridge capture --count 20
 ```
 
+## CachyOS/Arch setup
+
+Preview the complete installation without changing the system:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge setup --dry-run
+```
+
+Apply it as your normal user, without putting `sudo` before Python:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge setup --apply
+```
+
+The installer asks for confirmation, uses `sudo` only for package and system
+file operations, builds `huion-switcher` without root privileges, validates the
+packaged GS1333 objects, and reloads hwdb/udev. It never switches the connected
+tablet directly; the final activation remains a physical unplug/replug.
+
 The capture command may require temporary root access until device permissions
 are installed. It is for fallback investigation only. Do not change device
 nodes to mode `777`.
@@ -77,13 +96,14 @@ nodes to mode `777`.
 
 - [Observed GS1333 protocol](docs/protocol.md)
 - [Architecture and hotplug](docs/architecture.md)
+- [Installer design and usage](docs/setup.md)
 - [Upstream and physical testing](docs/testing.md)
 
 ## Scope
 
 Only the Huion Kamvas 13 Gen 3 / GS1333 (`256c:2008`) is supported. Buttons,
-dial-center presses, profiles, remapping UI, GUI, automatic installation, and
-distribution packaging are not implemented yet.
+dial-center presses, profiles, remapping UI, GUI, installers for distributions
+outside CachyOS/Arch, and distribution packaging are not implemented yet.
 
 ## License
 

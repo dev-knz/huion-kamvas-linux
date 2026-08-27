@@ -8,6 +8,7 @@ from pathlib import Path
 from .capture import capture
 from .device import DeviceDiscoveryError, find_vendor_hidraw
 from .diagnostics import doctor
+from .setup import SetupError, run_setup
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -18,6 +19,26 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("doctor", help="verify the upstream GS1333 input path")
+
+    setup_parser = subparsers.add_parser(
+        "setup", help="plan or apply CachyOS/Arch upstream setup"
+    )
+    setup_mode = setup_parser.add_mutually_exclusive_group()
+    setup_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show the installation plan without changing the system (default)",
+    )
+    setup_mode.add_argument(
+        "--apply",
+        action="store_true",
+        help="install packages, huion-switcher and udev configuration",
+    )
+    setup_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip the confirmation prompt; only valid with --apply",
+    )
 
     capture_parser = subparsers.add_parser(
         "capture", help="timestamp vendor reports for duplicate analysis"
@@ -39,6 +60,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         return doctor()
+
+    if args.command == "setup":
+        if args.yes and not args.apply:
+            raise SystemExit("--yes requires --apply")
+        try:
+            return run_setup(apply=args.apply, assume_yes=args.yes)
+        except SetupError as error:
+            raise SystemExit(f"setup failed: {error}") from error
 
     if args.count is not None and args.count < 1:
         raise SystemExit("--count must be greater than zero")
