@@ -11,7 +11,8 @@ PYTHONPATH=src python -m kamvas_bridge setup --apply
 
 Run it as the normal Live or desktop user, not from a root shell. The sections
 below document the individual operations performed by the installer and remain
-useful for manual recovery.
+useful for manual recovery. Setup also installs and starts the remapper's
+systemd user service.
 
 ## 1. Install the packaged HID-BPF support
 
@@ -110,15 +111,18 @@ name ends in `GS1333 Keypad`:
 - top dial: `REL_WHEEL` ±1 and `REL_WHEEL_HI_RES` ±120;
 - bottom dial: `REL_HWHEEL` ±1 and `REL_HWHEEL_HI_RES` ±120.
 
-This upstream milestone is complete. The remaining application milestone is:
+Both milestones are complete. Physical testing confirmed the upstream events
+and real application scrolling through the virtual pointer. Verify the
+automatic process with:
 
 ```bash
-PYTHONPATH=src python -m kamvas_bridge remap
+PYTHONPATH=src python -m kamvas_bridge service status
+PYTHONPATH=src python -m kamvas_bridge doctor
 ```
 
-With the remapper running, rotating dial 0 must scroll a focused Firefox page.
-Run `doctor` in a second terminal; it distinguishes `upstream HID path: READY`
-from `remapper: READY`.
+`doctor` distinguishes the upstream HID state, remapper runtime, service state,
+permissions, and optional Hyprland mapping. If foreground output is needed,
+disable the user service before running `remap` manually.
 
 ## 4. Diagnose an automatic-load failure
 
@@ -158,9 +162,9 @@ The literal `-` separates device paths from object names. Passing both names in
 one group lets the loader try its preferred API and fall back to the compatible
 one. Unplugging the tablet detaches this manual test and restores a clean state.
 
-Only if an installed system still fails on a clean boot with both upstream
-rules already present should we add a systemd oneshot unit. A long-running
-daemon is not needed for these finite hotplug helpers.
+Do not replace the two finite upstream hotplug helpers with a persistent root
+daemon. The systemd user service belongs only to the normalized evdev-to-uinput
+remapper.
 
 ## 5. Run hardware-independent tests
 
@@ -170,11 +174,20 @@ From the repository root:
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-These tests cover the four confirmed dial packets, invalid values, packet
-length, discovery before and after HID-BPF descriptor fixup, and diagnostic
-matching without requiring a tablet.
+These tests cover packet parsing, normalized dial translation, discovery and
+hotplug behavior, service installation and state, Hyprland configuration,
+Live-ISO/kernel mismatch safety, setup sequencing, and diagnosis without
+requiring a tablet.
 
-## 6. Preserve the hidraw fallback
+## 6. Live-ISO recovery
+
+Do not run a full `pacman -Syu` in the Live session used for this hardware
+test. If the installed modules directory no longer matches `uname -r`, reboot
+the ISO to restore the original running kernel and modules, then rerun setup.
+On a normal installed system, complete the update and reboot into its new
+kernel instead.
+
+## 7. Preserve the hidraw fallback
 
 The upstream path is the supported default. Use raw capture only on a system
 where HID-BPF cannot be attached and the original vendor descriptor remains:

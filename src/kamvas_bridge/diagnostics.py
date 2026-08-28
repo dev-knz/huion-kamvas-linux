@@ -11,6 +11,9 @@ from importlib.util import find_spec
 from pathlib import Path
 
 from .device import DeviceDiscoveryError, find_vendor_hidraw
+from .environment import runtime_environment
+from .hyprland import STYLUS_DEVICE_NAME, hyprland_status
+from .service import SERVICE_NAME, user_service_state
 
 BPF_FIRMWARE_ROOTS = (
     Path("/usr/lib/firmware/hid/bpf"),
@@ -281,6 +284,19 @@ def doctor() -> int:
     problems = 0
     vendor_device = None
 
+    runtime = runtime_environment()
+    print(f"running kernel: {runtime.running_kernel}")
+    print(f"Live ISO/archiso: {'yes' if runtime.live else 'no'}")
+    if runtime.kernel_modules_match:
+        print(f"matching kernel modules: {runtime.matching_module_directory}")
+    else:
+        print("matching kernel modules: NOT FOUND")
+        print(
+            "recovery: reboot into a kernel that has a matching /lib/modules "
+            "directory, then rerun setup"
+        )
+        problems += 1
+
     try:
         vendor_device = find_vendor_hidraw()
     except DeviceDiscoveryError as error:
@@ -315,14 +331,22 @@ def doctor() -> int:
         print("GS1333 HID-BPF hwdb match: NOT FOUND")
         problems += 1
 
+    bpf_installed = bool(package and installed and loader_rule and hwdb_files)
+    if package is None:
+        print("HID-BPF installation: NOT INSTALLED")
+        print("recovery: install udev-hid-bpf, then run kamvas-bridge setup --apply")
+    elif not bpf_installed:
+        print("HID-BPF installation: INCOMPLETE")
+        print("recovery: reinstall udev-hid-bpf and rerun setup")
+    else:
+        print("HID-BPF installation: READY")
+
     hid_devices = _gs1333_hid_devices()
-    matched_devices = 0
     if hid_devices:
         print(f"GS1333 HID devices: {len(hid_devices)}")
         for device in hid_devices:
             matches = _bpf_match_properties(_udev_properties(path=device))
             if matches:
-                matched_devices += 1
                 values = ", ".join(
                     f"{key}={value}" for key, value in sorted(matches.items())
                 )
@@ -348,13 +372,20 @@ def doctor() -> int:
     loaded = _matching_paths(BPF_PIN_ROOT)
     if loaded:
         print("GS1333 HID-BPF loaded: " + ", ".join(str(path) for path in loaded))
+        print("HID-BPF runtime: LOADED")
     else:
         print("GS1333 HID-BPF loaded: NOT FOUND under /sys/fs/bpf/hid")
+        print("HID-BPF runtime: NOT LOADED")
         problems += 1
 
     keypads = _keypad_devices()
     if not keypads:
         print(f"GS1333 Keypad: NOT FOUND ({KEYPAD_NAME})")
+        if loaded:
+            print(
+                "recovery: physically unplug the Kamvas, wait two seconds, and "
+                "reconnect it; then rerun doctor"
+            )
         problems += 1
     else:
         keypad_ready = False
@@ -379,13 +410,11 @@ def doctor() -> int:
             problems += 1
 
     if installed and loader_rule and hwdb_files and hid_devices and not loaded:
-        if matched_devices == 0:
-            print("next: reload the hwdb/udev rules, then unplug and reconnect the tablet")
-        else:
-            print(
-                "next: unplug and reconnect the tablet; package installation "
-                "does not replay add events"
-            )
+        print("recovery commands (not executed by doctor):")
+        print("  sudo systemd-hwdb update")
+        print("  sudo udevadm control --reload")
+        print("  sudo udevadm trigger --subsystem-match=hid")
+        print("then physically unplug/reconnect the Kamvas")
     if switcher is None or switcher_rule is None:
         print("next: install upstream huion-switcher and its 80-huion-switcher.rules file")
 
@@ -401,21 +430,33 @@ def doctor() -> int:
     print(f"kamvas-bridge udev rule: {remapper_rule or 'NOT FOUND'}")
     print(f"uinput modules-load config: {modules_load or 'NOT FOUND'}")
     if remapper_rule is None or modules_load is None:
+        print("recovery: rerun kamvas-bridge setup --apply")
         remapper_problems += 1
 
     evdev_available = find_spec("evdev") is not None
     print(f"python-evdev: {'FOUND' if evdev_available else 'NOT FOUND'}")
     if not evdev_available:
+        print("recovery: install python-evdev and restart the user service")
         remapper_problems += 1
 
     source_readable = any(os.access(keypad.path, os.R_OK) for keypad in keypads)
     print(f"GS1333 Keypad readable: {'yes' if source_readable else 'no'}")
     if keypads and not source_readable:
+        print(
+            "recovery: reinstall/reload 70-kamvas-bridge.rules and reconnect the tablet"
+        )
         remapper_problems += 1
 
     uinput_writable = UINPUT_PATH.exists() and os.access(UINPUT_PATH, os.W_OK)
     print(f"uinput writable: {'yes' if uinput_writable else 'no'}")
     if not uinput_writable:
+        if UINPUT_PATH.exists():
+            print("recovery: reload the kamvas-bridge udev rule for /dev/uinput")
+        else:
+            print(
+                "recovery: load the matching uinput module; if modules do not match, "
+                "reboot before retrying"
+            )
         remapper_problems += 1
 
     virtual_pointers = _virtual_pointer_devices()
@@ -427,10 +468,65 @@ def doctor() -> int:
         for pointer in virtual_pointers:
             print(f"virtual pointer: {pointer.path} ({VIRTUAL_POINTER_NAME})")
     else:
-        print("virtual pointer: NOT FOUND (start kamvas-bridge remap)")
+        print("virtual pointer: NOT FOUND")
     if not virtual_ready:
         remapper_problems += 1
 
-    print("remapper: " + ("READY" if remapper_problems == 0 else "NOT READY"))
+    runtime_ready = remapper_problems == 0
+    print("remapper runtime: " + ("READY" if runtime_ready else "NOT READY"))
 
-    return 0 if upstream_problems == 0 and remapper_problems == 0 else 1
+    service = user_service_state()
+    if not service.installed:
+        service_label = "NOT INSTALLED"
+    elif service.active:
+        service_label = f"ACTIVE ({service.sub_state})"
+    elif service.active_state == "failed":
+        service_label = "FAILED"
+    else:
+        service_label = f"INACTIVE ({service.sub_state})"
+    print(f"remapper service: {service_label}")
+    print(f"remapper service enabled: {'yes' if service.enabled else 'no'}")
+    service_ready = service.installed and service.enabled and service.active
+    if not service_ready:
+        if not service.installed:
+            print("recovery: kamvas-bridge service install")
+        elif service.active_state == "failed":
+            print("recovery: kamvas-bridge service restart")
+            print(f"logs: journalctl --user -u {SERVICE_NAME} -b --no-pager")
+        else:
+            print("recovery: kamvas-bridge service enable")
+
+    automatic_ready = runtime_ready and service_ready
+    print("remapper: " + ("READY" if automatic_ready else "NOT READY"))
+
+    hyprland = hyprland_status()
+    hyprland_ready = True
+    if not hyprland.detected:
+        print("Hyprland mapping: NOT APPLICABLE (Hyprland not detected)")
+    elif not hyprland.configured:
+        print("Hyprland mapping: NOT CONFIGURED")
+        print(
+            "recovery: kamvas-bridge hyprland configure --output <MONITOR>; "
+            "list outputs with hyprctl -j monitors"
+        )
+    else:
+        print(f"Hyprland mapping output: {hyprland.output}")
+        if not hyprland.session_active:
+            print("Hyprland mapping: CONFIGURED (live session not available to verify)")
+        else:
+            print(
+                f"Hyprland output active: {'yes' if hyprland.output_present else 'no'}"
+            )
+            print(
+                f"Hyprland stylus {STYLUS_DEVICE_NAME}: "
+                + ("FOUND" if hyprland.stylus_present else "NOT FOUND")
+            )
+            if hyprland.output_present and hyprland.stylus_present:
+                print("Hyprland mapping: READY")
+            elif hyprland.output_present and not hid_devices:
+                print("Hyprland mapping: CONFIGURED (tablet disconnected)")
+            else:
+                hyprland_ready = False
+                print("Hyprland mapping: NOT READY")
+
+    return 0 if upstream_problems == 0 and automatic_ready and hyprland_ready else 1

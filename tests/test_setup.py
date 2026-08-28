@@ -3,8 +3,10 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import call, patch
 
+from kamvas_bridge.environment import RuntimeEnvironment
 from kamvas_bridge.setup import (
     REMAPPER_RULE_SOURCE,
     SetupError,
@@ -13,6 +15,12 @@ from kamvas_bridge.setup import (
     _read_os_release,
     _verify_packaged_bpf,
     run_setup,
+)
+
+READY_ENVIRONMENT = RuntimeEnvironment(
+    live=False,
+    running_kernel="6.18.0-cachyos",
+    matching_module_directory=Path("/usr/lib/modules/6.18.0-cachyos"),
 )
 
 
@@ -47,6 +55,10 @@ class SetupTests(unittest.TestCase):
                 return_value={"ID": "cachyos"},
             ),
             patch("kamvas_bridge.setup._switcher_installed", return_value=False),
+            patch(
+                "kamvas_bridge.setup.runtime_environment",
+                return_value=READY_ENVIRONMENT,
+            ),
             patch("kamvas_bridge.setup._run_checked") as run_checked,
             redirect_stdout(StringIO()),
         ):
@@ -62,6 +74,10 @@ class SetupTests(unittest.TestCase):
                 return_value={"ID": "arch"},
             ),
             patch("kamvas_bridge.setup._switcher_installed", return_value=True),
+            patch(
+                "kamvas_bridge.setup.runtime_environment",
+                return_value=READY_ENVIRONMENT,
+            ),
             patch("kamvas_bridge.setup._confirm", return_value=False),
             patch("kamvas_bridge.setup._run_checked") as run_checked,
             redirect_stdout(StringIO()),
@@ -78,6 +94,10 @@ class SetupTests(unittest.TestCase):
                 return_value={"ID": "cachyos"},
             ),
             patch("kamvas_bridge.setup._switcher_installed", return_value=False),
+            patch(
+                "kamvas_bridge.setup.runtime_environment",
+                return_value=READY_ENVIRONMENT,
+            ),
             patch("kamvas_bridge.setup.os.geteuid", return_value=0, create=True),
             patch("kamvas_bridge.setup._run_checked") as run_checked,
             redirect_stdout(StringIO()),
@@ -94,16 +114,35 @@ class SetupTests(unittest.TestCase):
                 return_value={"ID": "cachyos"},
             ),
             patch("kamvas_bridge.setup._switcher_installed", return_value=True),
+            patch(
+                "kamvas_bridge.setup.runtime_environment",
+                return_value=READY_ENVIRONMENT,
+            ),
             patch("kamvas_bridge.setup.os.geteuid", return_value=1000, create=True),
             patch("kamvas_bridge.setup._require_command"),
             patch("kamvas_bridge.setup._verify_packaged_bpf"),
             patch("kamvas_bridge.setup._install_remapper_runtime"),
+            patch("kamvas_bridge.setup._preflight_hyprland"),
+            patch(
+                "kamvas_bridge.setup.configure_hyprland",
+                return_value=SimpleNamespace(fragment=Path("/home/test/kamvas.lua")),
+            ) as configure_hyprland,
+            patch(
+                "kamvas_bridge.setup.install_user_service",
+                return_value=SimpleNamespace(unit=Path("/home/test/service")),
+            ),
+            patch("kamvas_bridge.setup.enable_user_service"),
             patch("kamvas_bridge.setup._run_checked") as run_checked,
             redirect_stdout(StringIO()),
         ):
-            result = run_setup(apply=True, assume_yes=True)
+            result = run_setup(
+                apply=True,
+                assume_yes=True,
+                hyprland_output="HDMI-A-1",
+            )
 
         self.assertEqual(result, 0)
+        configure_hyprland.assert_called_once_with("HDMI-A-1")
         self.assertEqual(
             run_checked.call_args_list,
             [
@@ -147,10 +186,19 @@ class SetupTests(unittest.TestCase):
                 return_value={"ID": "arch"},
             ),
             patch("kamvas_bridge.setup._switcher_installed", return_value=False),
+            patch(
+                "kamvas_bridge.setup.runtime_environment",
+                return_value=READY_ENVIRONMENT,
+            ),
             patch("kamvas_bridge.setup.os.geteuid", return_value=1000, create=True),
             patch("kamvas_bridge.setup._require_command"),
             patch("kamvas_bridge.setup._verify_packaged_bpf"),
             patch("kamvas_bridge.setup._install_remapper_runtime"),
+            patch(
+                "kamvas_bridge.setup.install_user_service",
+                return_value=SimpleNamespace(unit=Path("/home/test/service")),
+            ),
+            patch("kamvas_bridge.setup.enable_user_service"),
             patch("kamvas_bridge.setup._run_checked"),
             patch("kamvas_bridge.setup._install_switcher") as install_switcher,
             redirect_stdout(StringIO()),
@@ -159,6 +207,118 @@ class SetupTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         install_switcher.assert_called_once_with()
+
+    def test_repeated_apply_updates_the_same_user_service(self) -> None:
+        service_paths = SimpleNamespace(unit=Path("/home/test/service"))
+        with (
+            patch(
+                "kamvas_bridge.setup._read_os_release",
+                return_value={"ID": "cachyos"},
+            ),
+            patch("kamvas_bridge.setup._switcher_installed", return_value=True),
+            patch(
+                "kamvas_bridge.setup.runtime_environment",
+                return_value=READY_ENVIRONMENT,
+            ),
+            patch("kamvas_bridge.setup.os.geteuid", return_value=1000, create=True),
+            patch("kamvas_bridge.setup._require_command"),
+            patch("kamvas_bridge.setup._verify_packaged_bpf"),
+            patch("kamvas_bridge.setup._install_remapper_runtime"),
+            patch(
+                "kamvas_bridge.setup.install_user_service",
+                return_value=service_paths,
+            ) as install_service,
+            patch("kamvas_bridge.setup.enable_user_service") as enable_service,
+            patch("kamvas_bridge.setup._run_checked"),
+            redirect_stdout(StringIO()),
+        ):
+            first = run_setup(apply=True, assume_yes=True)
+            second = run_setup(apply=True, assume_yes=True)
+
+        self.assertEqual((first, second), (0, 0))
+        self.assertEqual(install_service.call_count, 2)
+        self.assertEqual(enable_service.call_count, 2)
+
+    def test_live_environment_uses_selected_package_sync_not_full_upgrade(self) -> None:
+        live = RuntimeEnvironment(
+            live=True,
+            running_kernel="6.18.0-cachyos-lts",
+            matching_module_directory=Path("/usr/lib/modules/6.18.0-cachyos-lts"),
+        )
+        with (
+            patch(
+                "kamvas_bridge.setup._read_os_release",
+                return_value={"ID": "cachyos"},
+            ),
+            patch("kamvas_bridge.setup._switcher_installed", return_value=True),
+            patch("kamvas_bridge.setup.runtime_environment", return_value=live),
+            patch("kamvas_bridge.setup.os.geteuid", return_value=1000, create=True),
+            patch("kamvas_bridge.setup._require_command"),
+            patch("kamvas_bridge.setup._verify_packaged_bpf"),
+            patch("kamvas_bridge.setup._install_remapper_runtime"),
+            patch(
+                "kamvas_bridge.setup.install_user_service",
+                return_value=SimpleNamespace(unit=Path("/home/test/service")),
+            ),
+            patch("kamvas_bridge.setup.enable_user_service"),
+            patch("kamvas_bridge.setup._run_checked") as run_checked,
+            redirect_stdout(StringIO()),
+        ):
+            result = run_setup(apply=True, assume_yes=True)
+
+        self.assertEqual(result, 0)
+        package_command = run_checked.call_args_list[0].args[0]
+        self.assertEqual(package_command[2], "-Sy")
+        self.assertNotIn("-Syu", package_command)
+
+    def test_kernel_module_mismatch_blocks_before_package_changes(self) -> None:
+        mismatch = RuntimeEnvironment(
+            live=True,
+            running_kernel="6.18.0-cachyos-lts",
+            matching_module_directory=None,
+        )
+        with (
+            patch(
+                "kamvas_bridge.setup._read_os_release",
+                return_value={"ID": "cachyos"},
+            ),
+            patch("kamvas_bridge.setup._switcher_installed", return_value=True),
+            patch("kamvas_bridge.setup.runtime_environment", return_value=mismatch),
+            patch("kamvas_bridge.setup._run_checked") as run_checked,
+            redirect_stdout(StringIO()),
+            self.assertRaisesRegex(SetupError, "kernel/modules mismatch"),
+        ):
+            run_setup(apply=True, assume_yes=True)
+
+        run_checked.assert_not_called()
+
+    def test_kernel_update_mismatch_stops_before_modprobe(self) -> None:
+        mismatch = RuntimeEnvironment(
+            live=False,
+            running_kernel="6.18.0-cachyos",
+            matching_module_directory=None,
+        )
+        with (
+            patch(
+                "kamvas_bridge.setup._read_os_release",
+                return_value={"ID": "cachyos"},
+            ),
+            patch("kamvas_bridge.setup._switcher_installed", return_value=True),
+            patch(
+                "kamvas_bridge.setup.runtime_environment",
+                side_effect=[READY_ENVIRONMENT, mismatch],
+            ),
+            patch("kamvas_bridge.setup.os.geteuid", return_value=1000, create=True),
+            patch("kamvas_bridge.setup._require_command"),
+            patch("kamvas_bridge.setup._verify_packaged_bpf"),
+            patch("kamvas_bridge.setup._run_checked") as run_checked,
+            redirect_stdout(StringIO()),
+            self.assertRaisesRegex(SetupError, "kernel/modules mismatch"),
+        ):
+            run_setup(apply=True, assume_yes=True)
+
+        self.assertEqual(len(run_checked.call_args_list), 1)
+        self.assertIn("pacman", run_checked.call_args_list[0].args[0])
 
     def test_verifies_packaged_bpf_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

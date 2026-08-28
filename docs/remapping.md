@@ -17,27 +17,31 @@ creates `kamvas-bridge Virtual Pointer` through uinput:
 Ignoring the high-resolution companions prevents one physical detent from
 being emitted twice. The remapper does not contain a hidraw parser or debounce.
 
-## Run the first milestone
+## Physically confirmed behavior
 
-After `setup --apply` and a physical reconnect, start this as the normal desktop
-user:
+After `setup --apply` and a physical reconnect, the user service starts the
+remapper automatically. Physical testing confirmed that dial 0 scrolls Firefox
+vertically and dial 1 scrolls horizontally in applications that support a
+horizontal axis.
 
-```bash
-PYTHONPATH=src python -m kamvas_bridge remap
-```
-
-Leave the terminal open, focus Firefox, and rotate dial 0. The expected result
-is real vertical page scrolling. Dial 1 emits horizontal scrolling where the
-page or application supports it.
-
-In a second terminal:
+Check both layers with:
 
 ```bash
+PYTHONPATH=src python -m kamvas_bridge service status
 PYTHONPATH=src python -m kamvas_bridge doctor
 ```
 
-The complete working state reports both `upstream HID path: READY` and
-`remapper: READY`.
+The complete working state reports `upstream HID path: READY`, an active and
+enabled remapper service, and `remapper: READY`.
+
+For debugging in the foreground, stop the persistent copy first:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge service disable
+PYTHONPATH=src python -m kamvas_bridge remap
+```
+
+Enable it again after testing with `kamvas-bridge service enable`.
 
 ## Detection and hotplug
 

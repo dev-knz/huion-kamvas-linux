@@ -1,9 +1,13 @@
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from kamvas_bridge.device import DeviceDiscoveryError
 from kamvas_bridge.diagnostics import (
+    KeypadDevice,
     _bpf_match_properties,
     _gs1333_hid_devices,
     _keypad_devices,
@@ -13,7 +17,11 @@ from kamvas_bridge.diagnostics import (
     _parse_properties,
     _udev_hid_bpf_package,
     _virtual_pointer_devices,
+    doctor,
 )
+from kamvas_bridge.environment import RuntimeEnvironment
+from kamvas_bridge.hyprland import HyprlandStatus
+from kamvas_bridge.service import ServiceState
 
 
 class DiagnosticHelpersTests(unittest.TestCase):
@@ -148,6 +156,118 @@ class DiagnosticHelpersTests(unittest.TestCase):
             self.assertEqual(len(virtual), 1)
             self.assertEqual(virtual[0].path, Path("/test-input/event30"))
             self.assertEqual(keypads, [])
+
+    def _doctor_output(
+        self,
+        *,
+        keypads: list[KeypadDevice],
+        uinput_writable: bool,
+        service: ServiceState,
+    ) -> str:
+        virtual = KeypadDevice(
+            path=Path("/dev/input/event40"),
+            sysfs_path=Path("/sys/class/input/event40"),
+            relative_codes=frozenset((6, 8)),
+            vendor_id=0x1209,
+            product_id=0x4B42,
+        )
+        runtime = RuntimeEnvironment(
+            live=False,
+            running_kernel="6.18.0-cachyos",
+            matching_module_directory=Path("/usr/lib/modules/6.18.0-cachyos"),
+        )
+        hyprland = HyprlandStatus(
+            detected=False,
+            configured=False,
+            paths=None,
+            output=None,
+            session_active=False,
+            output_present=None,
+            stylus_present=None,
+        )
+        fake_uinput = Path("/dev/uinput")
+        with (
+            patch(
+                "kamvas_bridge.diagnostics.find_vendor_hidraw",
+                side_effect=DeviceDiscoveryError("not available"),
+            ),
+            patch("kamvas_bridge.diagnostics.runtime_environment", return_value=runtime),
+            patch(
+                "kamvas_bridge.diagnostics._udev_hid_bpf_package",
+                return_value="udev-hid-bpf 2.3.0",
+            ),
+            patch(
+                "kamvas_bridge.diagnostics._matching_paths",
+                side_effect=lambda root: [root / "0010-Huion__Kamvas13Gen3.bpf.o"],
+            ),
+            patch(
+                "kamvas_bridge.diagnostics._first_existing",
+                return_value=Path("/installed"),
+            ),
+            patch(
+                "kamvas_bridge.diagnostics._matching_hwdb_files",
+                return_value=[Path("/installed/hid-bpf.hwdb")],
+            ),
+            patch(
+                "kamvas_bridge.diagnostics._gs1333_hid_devices",
+                return_value=[Path("/sys/bus/hid/devices/0003:256C:2008.0001")],
+            ),
+            patch(
+                "kamvas_bridge.diagnostics._udev_properties",
+                return_value={
+                    "HID_BPF_S_001": "0010-Huion__Kamvas13Gen3.bpf.o"
+                },
+            ),
+            patch("kamvas_bridge.diagnostics._keypad_devices", return_value=keypads),
+            patch(
+                "kamvas_bridge.diagnostics._virtual_pointer_devices",
+                return_value=[virtual],
+            ),
+            patch("kamvas_bridge.diagnostics.find_spec", return_value=object()),
+            patch("kamvas_bridge.diagnostics.UINPUT_PATH", fake_uinput),
+            patch(
+                "kamvas_bridge.diagnostics.os.access",
+                side_effect=lambda path, mode: (
+                    uinput_writable if path == fake_uinput else True
+                ),
+            ),
+            patch.object(Path, "exists", return_value=uinput_writable),
+            patch("kamvas_bridge.diagnostics.user_service_state", return_value=service),
+            patch("kamvas_bridge.diagnostics.hyprland_status", return_value=hyprland),
+            redirect_stdout(StringIO()) as output,
+        ):
+            doctor()
+        return output.getvalue()
+
+    def test_doctor_distinguishes_missing_keypad(self) -> None:
+        service = ServiceState(True, "loaded", "enabled", "active", "running")
+
+        output = self._doctor_output(
+            keypads=[], uinput_writable=True, service=service
+        )
+
+        self.assertIn("GS1333 Keypad: NOT FOUND", output)
+        self.assertIn("physically unplug the Kamvas", output)
+        self.assertIn("upstream HID path: NOT READY", output)
+
+    def test_doctor_distinguishes_uinput_and_inactive_service(self) -> None:
+        keypad = KeypadDevice(
+            path=Path("/dev/input/event27"),
+            sysfs_path=Path("/sys/class/input/event27"),
+            relative_codes=frozenset((6, 8, 11, 12)),
+            vendor_id=0x256C,
+            product_id=0x2008,
+        )
+        service = ServiceState(True, "loaded", "disabled", "inactive", "dead")
+
+        output = self._doctor_output(
+            keypads=[keypad], uinput_writable=False, service=service
+        )
+
+        self.assertIn("uinput writable: no", output)
+        self.assertIn("remapper service: INACTIVE", output)
+        self.assertIn("kamvas-bridge service enable", output)
+        self.assertIn("remapper: NOT READY", output)
 
 
 if __name__ == "__main__":

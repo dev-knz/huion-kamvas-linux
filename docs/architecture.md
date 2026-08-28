@@ -9,7 +9,7 @@ USB hotplug
 
  vendor reports -> attached HID-BPF -> kernel Keypad events
   -> evdev/libinput tablet-pad dials
-  -> kamvas-bridge normalized-event remapper
+  -> kamvas-bridge normalized-event remapper (systemd --user)
   -> uinput virtual pointer/keyboard outputs
   -> libinput pointer scroll
   -> Hyprland, GNOME, KDE, Sway and applications
@@ -61,13 +61,23 @@ but the initial implementation creates only the pointer required by the dial
 milestone. There is still no reason to decode GS1333 vendor packets again in
 the normal userspace path.
 
+The complete path through the virtual pointer was then physically confirmed:
+the top dial scrolls vertically and the bottom dial scrolls horizontally in
+applications. The userspace milestone is therefore complete as well.
+
 ## Process model
 
 The remapper is a long-running user-session process. It scans for the Keypad by
 device name plus USB vendor/product IDs, watches reconnects, and never matches
-its differently named virtual pointer. It runs in the foreground for the first
-Firefox milestone. A systemd user service is the next step after this behavior
-is physically validated.
+its differently named virtual pointer. Setup installs a systemd user service,
+enables it for the user's `default.target`, and starts it immediately. The unit
+runs without root and restarts on unexpected failure. Its executable Python
+package is copied into the user's data directory, so the service does not
+depend on keeping the cloned repository in the same place.
+
+The process also takes a per-user runtime lock. A second service or foreground
+copy exits instead of creating duplicate virtual devices. For development, the
+service can be disabled before running `kamvas-bridge remap` manually.
 
 The udev permission rule grants the active local session access to the specific
 GS1333 event device, `/dev/uinput`, and the identified virtual pointer event
@@ -84,9 +94,9 @@ Development should proceed in this order:
    (`setup --dry-run` and `setup --apply` now cover CachyOS/Arch);
 3. verify `udev-hid-bpf`, its objects, hwdb and rules;
 4. detect kernel/distribution support and present actionable recovery steps;
-5. physically validate dial 0 scrolling Firefox through the virtual pointer;
+5. verify the automatic user service and persistent compositor mapping;
 6. add configurable dial/button mappings and profiles;
-7. add a systemd user service and then a GUI.
+7. add a GUI after the configuration model is stable.
 
 ## Userspace fallback
 

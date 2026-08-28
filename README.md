@@ -1,130 +1,248 @@
 # kamvas-bridge
 
-Linux setup, diagnostics and dial remapping for the Huion Kamvas 13 Gen 3
-(GS1333, `256c:2008`). The upstream HID path has been confirmed on physical
-hardware.
+Linux setup, diagnostics and userspace remapping for the Huion Kamvas 13 Gen 3
+(GS1333, `256c:2008`). The complete dial path has been confirmed on physical
+hardware running CachyOS, Hyprland and Wayland.
 
-## Current direction
-
-The primary input path keeps upstream Linux responsible for decoding the
-tablet, then translates normalized tablet-pad dials into pointer scrolling:
+## Architecture
 
 ```text
 GS1333 -> huion-switcher -> HID-BPF -> evdev/libinput tablet-pad
-       -> kamvas-bridge remapper -> uinput virtual pointer/keyboard -> applications
+       -> kamvas-bridge user service -> uinput virtual pointer -> applications
+
+HID-BPF stylus -> Hyprland device mapping -> configured Kamvas output
 ```
 
-Linux now contains a device-specific HID-BPF program named
-[`Huion__Kamvas13Gen3.bpf.c`](https://github.com/torvalds/linux/blob/master/drivers/hid/bpf/progs/Huion__Kamvas13Gen3.bpf.c).
-It recognizes `256c:2008`, accepts the `HUION_M22c_` firmware family, fixes the
-vendor descriptor, and exposes the top and bottom wheels as ordinary Linux
-relative input axes. This matches the tested firmware
-`HUION_M22c_250514`.
+Physical testing confirmed:
 
-Physical testing on CachyOS Live confirmed that the kernel selects
-`0010-Huion__Kamvas13Gen3_bpf` and creates
-`HUION Huion Tablet_GS1333 Keypad` with:
+- the top dial scrolls vertically in real applications;
+- the bottom dial emits horizontal scrolling;
+- the HID-BPF stylus can be mapped exclusively to the Kamvas display;
+- the uinput remapper runs without root after its targeted udev permissions are
+  installed.
 
-- top dial: `REL_WHEEL` ±1 and `REL_WHEEL_HI_RES` ±120;
-- bottom dial: `REL_HWHEEL` ±1 and `REL_HWHEEL_HI_RES` ±120.
+The normal path reads only the normalized `REL_WHEEL` and `REL_HWHEEL` events
+created by upstream HID-BPF. It does not parse hidraw, duplicate the upstream
+decoder, or apply arbitrary debounce. Hidraw remains a compatibility fallback
+for unsupported kernels/distributions.
 
-Libinput exposes those events as `TABLET_PAD_DIAL`, which browsers do not treat
-as pointer scroll automatically. The HID-BPF program already parses the vendor
-reports correctly, so the remapper reads only normalized evdev events and emits
-scroll events through a virtual pointer. A virtual keyboard output is reserved
-for future configurable actions; the initial dial milestone does not need it.
-The remapper does not parse hidraw.
+## Installation from a checkout
 
-Arch's `udev-hid-bpf 2.3.0.20260703-2` package now ships both compatibility
-variants of the GS1333 program. Installing the package while the tablet is
-already connected does not replay the udev `add` event, however, so an installed
-object is not proof that it has been attached. See [Testing](docs/testing.md)
-for the exact hotplug and verification sequence.
-
-This repository provides a Python setup, diagnostic and remapping tool. It:
-
-- checks the installed `udev-hid-bpf` package and GS1333 object files;
-- diagnoses hwdb matching, udev rules and the loaded BPF state;
-- verifies `huion-switcher` and its udev rule;
-- verifies that the GS1333 Keypad exposes vertical and horizontal wheel axes;
-- maps dial 0 to vertical pointer scroll and dial 1 to horizontal scroll;
-- handles changing `/dev/input/event*` numbers and reconnects dynamically;
-- creates a clearly named virtual pointer and never reads it as an input source;
-- retains raw-report capture for fallback investigation;
-- is testable without a tablet attached.
-
-The next milestone is physical confirmation that dial 0 scrolls Firefox through
-the virtual pointer. After that come configurable dial/button actions, profiles,
-automatic user-session startup and a GUI. A userspace
-`hidraw -> uinput` bridge remains a compatibility fallback for distributions or
-kernels that cannot run the upstream path. It is no longer the primary design,
-and no arbitrary debounce is implemented.
-
-## Development
-
-Python 3.11 or newer and `python-evdev` are required on Linux.
+On an installed, updated CachyOS/Arch system, clone as the regular desktop user:
 
 ```bash
-python -m unittest discover -s tests -v
-python -m kamvas_bridge doctor
-python -m kamvas_bridge remap
-python -m kamvas_bridge capture --count 20
+sudo pacman -S --needed git python
+git clone https://github.com/dev-knz/huion-kamvas-linux.git
+cd huion-kamvas-linux
 ```
 
-When running directly from a checkout without installing the package, set the
-source directory on Python's import path:
+Only on a fresh Live ISO whose package databases do not exist yet, bootstrap
+with `sudo pacman -Sy --needed git python` instead.
 
-```bash
-PYTHONPATH=src python -m kamvas_bridge doctor
-PYTHONPATH=src python -m kamvas_bridge remap
-PYTHONPATH=src python -m kamvas_bridge capture --count 20
-```
+Do not run the Python command itself with `sudo`. The setup requests `sudo` only
+for its audited package and system-file operations.
 
-## CachyOS/Arch setup
+## Setup
 
-Preview the complete installation without changing the system:
+Preview every operation without changing the system:
 
 ```bash
 PYTHONPATH=src python -m kamvas_bridge setup --dry-run
 ```
 
-Apply it as your normal user, without putting `sudo` before Python:
+Apply upstream support, permissions and the automatic remapper service:
 
 ```bash
 PYTHONPATH=src python -m kamvas_bridge setup --apply
 ```
 
-The installer asks for confirmation, uses `sudo` only for package and system
-file operations, builds `huion-switcher` without root privileges, validates the
-packaged GS1333 objects, and reloads hwdb/udev. It never switches the connected
-tablet directly; the final activation remains a physical unplug/replug.
-
-After reconnecting the tablet, run the remapper as the normal desktop user:
+For Hyprland, first list the actual outputs:
 
 ```bash
+hyprctl -j monitors
+```
+
+Then pass the connector used by the Kamvas explicitly. `HDMI-A-1` is only an
+example and is never assumed automatically:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge setup --apply \
+  --hyprland-output HDMI-A-1
+```
+
+The Hyprland mapping targets only the confirmed HID-BPF device
+`huion-huion-tablet_gs1333-stylus`. It does not configure the older
+`huion-huion-tablet_gs1333-pen` interface.
+
+The setup is idempotent. Re-running it refreshes the managed runtime copy,
+reloads the systemd user unit and restarts the remapper with the current code.
+It does not overwrite the user's Hyprland configuration: it installs a separate
+managed fragment and adds one marked, removable include block.
+
+### Live ISO and kernel safety
+
+On an installed CachyOS/Arch system, setup uses a full `pacman -Syu` transaction.
+On an ArchISO/CachyOS Live environment it avoids a full upgrade and installs only
+the selected packages with `pacman -Sy --needed`.
+
+Before and after the package transaction, setup compares `uname -r` with the
+available `/usr/lib/modules`/`/lib/modules` directories. If they do not match,
+setup stops before `modprobe` and service activation. Reboot into the matching
+installed kernel and run setup again. Do not keep updating a broken Live session
+just to force the hardware test through.
+
+## Automatic daily use
+
+Setup installs and enables `kamvas-bridge.service` in the current user's systemd
+manager. It starts at login, restarts after failures, keeps waiting when the
+tablet is disconnected, and follows changing `/dev/input/event*` numbers after
+hotplug. No terminal needs to remain open.
+
+Useful controls:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge service status
+PYTHONPATH=src python -m kamvas_bridge service restart
+PYTHONPATH=src python -m kamvas_bridge service disable
+PYTHONPATH=src python -m kamvas_bridge service enable
+```
+
+Logs:
+
+```bash
+journalctl --user -u kamvas-bridge.service -b --no-pager
+```
+
+The service executes a managed copy below
+`$XDG_DATA_HOME/kamvas-bridge/runtime` (normally
+`~/.local/share/kamvas-bridge/runtime`), so daily operation does not depend on
+the clone remaining in the same directory.
+
+## Manual development mode
+
+The manual command remains available. Disable the automatic instance first so
+the instance lock does not reject the second process:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge service disable
 PYTHONPATH=src python -m kamvas_bridge remap
 ```
 
-Keep it running while testing Firefox. In another terminal, `doctor` reports
-the upstream HID path and remapper readiness separately.
+After testing, stop the foreground command with `Ctrl+C` and restore automatic
+operation:
 
-The capture command may require temporary root access until device permissions
-are installed. It is for fallback investigation only. Do not change device
-nodes to mode `777`.
+```bash
+PYTHONPATH=src python -m kamvas_bridge service enable
+```
+
+## Hyprland output mapping
+
+Configure or change the output without rerunning the system setup:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge hyprland configure \
+  --output HDMI-A-1
+PYTHONPATH=src python -m kamvas_bridge hyprland status
+```
+
+Current Hyprland Lua configurations receive `kamvas_bridge.lua` and a guarded
+`pcall(require, "kamvas_bridge")` include. Legacy `hyprland.conf` configurations
+receive a separate `kamvas-bridge.conf` fragment and marked `source` block.
+
+To choose another monitor, rerun `configure` with a name from
+`hyprctl -j monitors`. To remove only the project-managed mapping:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge hyprland remove
+```
+
+## Diagnosis and recovery
+
+Run diagnostics as the regular user:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge doctor
+```
+
+Doctor distinguishes:
+
+- missing/incomplete HID-BPF installation;
+- installed but unloaded HID-BPF;
+- missing GS1333 Keypad;
+- evdev permission failure;
+- missing or unwritable `/dev/uinput`;
+- inactive, failed or active remapper service;
+- missing virtual pointer;
+- missing Hyprland mapping, output or HID-BPF stylus;
+- Live ISO/running-kernel module mismatch.
+
+It never runs recovery commands automatically. For an installed-but-unloaded
+HID-BPF path, the documented recovery is:
+
+```bash
+sudo systemd-hwdb update
+sudo udevadm control --reload
+sudo udevadm trigger --subsystem-match=hid
+```
+
+Then physically unplug the Kamvas, wait two seconds, reconnect it, and rerun
+doctor. A fully operating configured system reports:
+
+```text
+upstream HID path: READY
+remapper service: ACTIVE (running)
+remapper: READY
+Hyprland mapping: READY
+```
+
+## Uninstalling/reverting project changes
+
+Remove the automatic user service and managed runtime copy:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge service uninstall
+```
+
+Remove the managed Hyprland fragment/include:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge hyprland remove
+```
+
+The two system files owned by this project can be removed explicitly:
+
+```bash
+sudo rm -f /etc/udev/rules.d/70-kamvas-bridge.rules
+sudo rm -f /etc/modules-load.d/kamvas-bridge.conf
+sudo udevadm control --reload
+```
+
+This intentionally does not remove `udev-hid-bpf`, `huion-switcher` or their
+upstream rules because they may be useful independently. It also does not unload
+`uinput`, which other applications may be using.
+
+## Development tests
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -v
+```
+
+The tests do not require a physical tablet, Hyprland session, systemd user bus,
+or Linux input device.
 
 ## Documentation
 
-- [Observed GS1333 protocol](docs/protocol.md)
 - [Architecture and hotplug](docs/architecture.md)
-- [Installer design and usage](docs/setup.md)
+- [Installer and service lifecycle](docs/setup.md)
+- [Hyprland stylus mapping](docs/hyprland.md)
 - [Normalized dial remapping](docs/remapping.md)
-- [Upstream and physical testing](docs/testing.md)
+- [Testing and recovery](docs/testing.md)
+- [Observed fallback protocol](docs/protocol.md)
 
 ## Scope
 
-Only the Huion Kamvas 13 Gen 3 / GS1333 (`256c:2008`) is supported. Buttons,
-dial-center presses, profiles, remapping UI, GUI, installers for distributions
-outside CachyOS/Arch, and distribution packaging are not implemented yet.
+Only the Huion Kamvas 13 Gen 3 / GS1333 (`256c:2008`) is supported. Advanced
+button actions, profiles and a GUI are not implemented yet.
 
 ## License
 

@@ -19,6 +19,16 @@ from .diagnostics import (
     _matching_hwdb_files,
     _matching_paths,
 )
+from .environment import RuntimeEnvironment, runtime_environment
+from .hyprland import (
+    HyprlandError,
+    configure_hyprland,
+    hyprland_detected,
+    hyprland_monitors,
+    render_hyprland_fragment,
+    resolve_hyprland_paths,
+)
+from .service import ServiceError, enable_user_service, install_user_service
 
 OS_RELEASE_PATH = Path("/etc/os-release")
 HUION_SWITCHER_REPOSITORY = "https://github.com/whot/huion-switcher.git"
@@ -82,15 +92,26 @@ def _format_command(command: list[str]) -> str:
     return shlex.join(command)
 
 
-def _print_plan(*, switcher_installed: bool) -> None:
+def _package_command(environment: RuntimeEnvironment) -> list[str]:
+    operation = "-Sy" if environment.live else "-Syu"
+    return ["sudo", "pacman", operation, "--needed", *ARCH_PACKAGES]
+
+
+def _print_plan(
+    *,
+    switcher_installed: bool,
+    environment: RuntimeEnvironment,
+    hyprland_output: str | None,
+) -> None:
     print("CachyOS/Arch setup plan:")
+    print(f"  running kernel: {environment.running_kernel}")
+    print(f"  Live ISO/archiso: {'yes' if environment.live else 'no'}")
+    if environment.live:
+        print("  safety: synchronize/install selected packages without a full upgrade")
+    if not environment.kernel_modules_match:
+        print("  BLOCKED: no matching /lib/modules directory for the running kernel")
     step = 1
-    print(
-        f"  {step}. "
-        + _format_command(
-            ["sudo", "pacman", "-Syu", "--needed", *ARCH_PACKAGES]
-        )
-    )
+    print(f"  {step}. " + _format_command(_package_command(environment)))
     step += 1
     if switcher_installed:
         print(f"  {step}. keep the existing huion-switcher binary and udev rule")
@@ -111,7 +132,15 @@ def _print_plan(*, switcher_installed: bool) -> None:
     step += 1
     print(f"  {step}. update the systemd hwdb and reload udev rules")
     step += 1
-    print(f"  {step}. physically reconnect the tablet, then start the remapper")
+    print(f"  {step}. install and enable the systemd user remapper service")
+    step += 1
+    if hyprland_output is not None:
+        print(f"  {step}. map the HID-BPF stylus to Hyprland output {hyprland_output}")
+        step += 1
+    elif hyprland_detected():
+        print(f"  {step}. leave Hyprland unchanged (no --hyprland-output supplied)")
+        step += 1
+    print(f"  {step}. physically reconnect the tablet and verify with doctor")
 
 
 def _run_checked(command: list[str], *, cwd: Path | None = None) -> None:
@@ -197,6 +226,39 @@ def _install_remapper_runtime() -> None:
     )
 
 
+def _preflight_hyprland(output: str) -> None:
+    try:
+        paths = resolve_hyprland_paths()
+        render_hyprland_fragment(output, syntax=paths.syntax)
+    except HyprlandError as error:
+        raise SetupError(str(error)) from error
+    monitors = hyprland_monitors()
+    if monitors and output != "current" and output not in monitors:
+        available = ", ".join(sorted(monitors))
+        raise SetupError(f"Hyprland output {output!r} not active; available: {available}")
+
+
+def _kernel_mismatch_error(environment: RuntimeEnvironment) -> SetupError:
+    location = "/lib/modules or /usr/lib/modules"
+    if environment.live:
+        recovery = (
+            "Reboot the Live ISO to restore its matching kernel/modules, then rerun "
+            "setup without a full system upgrade."
+        )
+        context = "Live ISO"
+    else:
+        recovery = (
+            "Complete the system update, reboot into the new installed kernel, "
+            "then run setup again."
+        )
+        context = "current system"
+    return SetupError(
+        f"{context} kernel/modules mismatch: running {environment.running_kernel}, "
+        f"but no matching directory exists under {location}. Do not continue with "
+        f"modprobe. {recovery}"
+    )
+
+
 def _confirm() -> bool:
     try:
         response = input("Apply this system setup? [y/N] ")
@@ -205,7 +267,12 @@ def _confirm() -> bool:
     return response.strip().lower() in {"y", "yes"}
 
 
-def run_setup(*, apply: bool = False, assume_yes: bool = False) -> int:
+def run_setup(
+    *,
+    apply: bool = False,
+    assume_yes: bool = False,
+    hyprland_output: str | None = None,
+) -> int:
     """Print or apply the CachyOS/Arch setup plan."""
 
     properties = _read_os_release()
@@ -215,8 +282,21 @@ def run_setup(*, apply: bool = False, assume_yes: bool = False) -> int:
             f"automatic setup currently supports only CachyOS/Arch (detected: {distro})"
         )
 
+    if hyprland_output is not None:
+        _preflight_hyprland(hyprland_output)
+
+    environment = runtime_environment()
     switcher_installed = _switcher_installed()
-    _print_plan(switcher_installed=switcher_installed)
+    _print_plan(
+        switcher_installed=switcher_installed,
+        environment=environment,
+        hyprland_output=hyprland_output,
+    )
+    if not environment.kernel_modules_match:
+        if not apply:
+            print("dry run blocked: " + str(_kernel_mismatch_error(environment)))
+            return 1
+        raise _kernel_mismatch_error(environment)
     if not apply:
         print("dry run only; no system changes were made")
         return 0
@@ -232,8 +312,12 @@ def run_setup(*, apply: bool = False, assume_yes: bool = False) -> int:
 
     _require_command("sudo")
     _require_command("pacman")
-    _run_checked(["sudo", "pacman", "-Syu", "--needed", *ARCH_PACKAGES])
+    _run_checked(_package_command(environment))
     _verify_packaged_bpf()
+
+    post_install_environment = runtime_environment()
+    if not post_install_environment.kernel_modules_match:
+        raise _kernel_mismatch_error(post_install_environment)
 
     if not switcher_installed:
         _require_command("git")
@@ -249,7 +333,21 @@ def run_setup(*, apply: bool = False, assume_yes: bool = False) -> int:
     )
     _run_checked(["sudo", "udevadm", "settle"])
 
+    try:
+        service_paths = install_user_service()
+        enable_user_service()
+    except ServiceError as error:
+        raise SetupError(f"could not install the user service: {error}") from error
+
+    if hyprland_output is not None:
+        try:
+            hyprland_paths = configure_hyprland(hyprland_output)
+        except HyprlandError as error:
+            raise SetupError(f"could not configure Hyprland: {error}") from error
+        print(f"Hyprland mapping installed: {hyprland_paths.fragment}")
+
     print("setup files installed successfully")
+    print(f"user service installed: {service_paths.unit}")
     print("next: physically unplug the tablet, wait two seconds, and reconnect it")
-    print("then: PYTHONPATH=src python -m kamvas_bridge remap")
+    print("then: PYTHONPATH=src python -m kamvas_bridge doctor")
     return 0
