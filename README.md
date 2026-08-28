@@ -4,6 +4,24 @@ Linux setup, diagnostics and userspace remapping for the Huion Kamvas 13 Gen 3
 (GS1333, `256c:2008`). The complete dial path has been confirmed on physical
 hardware running CachyOS, Hyprland and Wayland.
 
+> Status: Experimental, tested on real hardware.
+
+## Project note
+
+This project was created to solve a real compatibility issue I encountered while
+using the Huion Kamvas 13 Gen 3 on Linux.
+
+AI-assisted development was used extensively during research, implementation,
+debugging, testing and documentation. The resulting software has been tested on
+real hardware, but this repository is not intended to represent the code as
+entirely hand-written by me or as a traditional portfolio project.
+
+I am publishing it because the work may be useful to other Huion users facing
+similar Linux compatibility issues.
+
+Bug reports, testing on other systems, improvements and contributions are
+welcome.
+
 ## Architecture
 
 ```text
@@ -246,5 +264,5 @@ button actions, profiles and a GUI are not implemented yet.
 
 ## License
 
-No project license has been selected yet. Upstream code is linked for reference
-and has not been copied into this repository.
+MIT License.
+Copyright (c) 2026
