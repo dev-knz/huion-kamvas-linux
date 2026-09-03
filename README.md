@@ -360,20 +360,6 @@ or Linux input device.
 Only the Huion Kamvas 13 Gen 3 / GS1333 (`256c:2008`) is supported. Per-app
 profiles, arbitrary macros/commands and a GUI are not implemented.
 
-## Project note
-
-This project was created to solve a real compatibility issue encountered while
-using the Huion Kamvas 13 Gen 3 on Linux.
-
-AI-assisted development was used extensively during research, implementation,
-debugging, testing, and documentation. The resulting software has been tested
-on real hardware, but this repository does not present the code as entirely
-hand-written by its author or as a traditional portfolio project.
-
-It is published because the work may be useful to other Huion users facing
-similar Linux compatibility issues. Bug reports, testing on other systems,
-improvements, and contributions are welcome.
-
 ## License
 
 MIT License.
