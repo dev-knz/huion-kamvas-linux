@@ -3,6 +3,8 @@
 The `setup` command automates the physically confirmed upstream and userspace
 paths on CachyOS and Arch. It also installs, enables, and starts a systemd user
 service for the remapper.
+It also creates the default user-editable TOML mapping only when that file does
+not already exist.
 
 ## Preview first
 
@@ -14,7 +16,8 @@ PYTHONPATH=src python -m kamvas_bridge setup --dry-run
 
 Dry-run mode is the default and never executes a system command. It shows the
 package transaction, whether `huion-switcher` must be built, the destination
-files, the user service, the udev refresh, and the required physical reconnect.
+files, the config file decision, the user service, the udev refresh, and the
+required physical reconnect.
 
 To preview an optional persistent Hyprland tablet-output mapping too:
 
@@ -56,12 +59,14 @@ work by privilege:
    installed;
 7. hwdb is updated, udev is reloaded, the `uinput` module is loaded, and its
    narrowly targeted udev event is replayed to apply the active-session ACL;
-8. a checkout-independent remapper is installed under the user's data
+8. the default config is created at the XDG user-config path, or an existing
+   valid config is preserved byte-for-byte;
+9. a checkout-independent remapper is installed under the user's data
    directory;
-9. a systemd user service is installed, enabled for login, and restarted;
-10. when requested, only a clearly marked Hyprland include and project-owned
+10. a systemd user service is installed, enabled for login, and restarted;
+11. when requested, only a clearly marked Hyprland include and project-owned
     mapping fragment are added;
-11. the user is told to physically reconnect the tablet and run `doctor`.
+12. the user is told to physically reconnect the tablet and run `doctor`.
 
 `--yes` skips the installer's own confirmation only when used together with
 `--apply`. It does not add pacman's `--noconfirm` option.
@@ -78,6 +83,9 @@ work by privilege:
   make any device node world-writable.
 - Repeated runs update and restart the same user service; they do not create a
   second service or virtual pointer.
+- Repeated runs never replace
+  `$XDG_CONFIG_HOME/kamvas-bridge/config.toml`; an invalid existing file stops
+  setup with a useful error.
 - Debian, Fedora and other package managers require separately tested package
   plans before they can be enabled.
 
@@ -123,6 +131,14 @@ PYTHONPATH=src python -m kamvas_bridge remap
 The process lock prevents an accidental second instance even if this step is
 forgotten.
 
+Mapping edits need only validation and service restart:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge config path
+PYTHONPATH=src python -m kamvas_bridge config validate
+PYTHONPATH=src python -m kamvas_bridge service restart
+```
+
 ## Removal
 
 Remove the optional Hyprland block and the user service with:
@@ -142,4 +158,6 @@ sudo udevadm control --reload
 
 This does not remove distribution packages or the separately installed
 upstream `huion-switcher`. See [Hyprland](hyprland.md) for the exact persistent
-mapping behavior.
+mapping behavior. The remapper config is deliberately retained so a later
+reinstall does not destroy the user's mappings; remove it manually only if that
+is explicitly desired.

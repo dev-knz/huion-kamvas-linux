@@ -1,6 +1,6 @@
 # kamvas-bridge
 
-Linux setup, diagnostics and userspace remapping for the Huion Kamvas 13 Gen 3
+Linux setup, diagnostics and configurable userspace remapping for the Huion Kamvas 13 Gen 3
 (GS1333, `256c:2008`). The complete dial path has been confirmed on physical
 hardware running CachyOS, Hyprland and Wayland.
 
@@ -26,7 +26,8 @@ welcome.
 
 ```text
 GS1333 -> huion-switcher -> HID-BPF -> evdev/libinput tablet-pad
-       -> kamvas-bridge user service -> uinput virtual pointer -> applications
+       -> kamvas-bridge user service
+       -> uinput virtual pointer + virtual keyboard -> applications
 
 HID-BPF stylus -> Hyprland device mapping -> configured Kamvas output
 ```
@@ -34,15 +35,20 @@ HID-BPF stylus -> Hyprland device mapping -> configured Kamvas output
 Physical testing confirmed:
 
 - the top dial scrolls vertically in real applications;
-- the bottom dial emits horizontal scrolling;
+- the bottom dial's normalized `REL_HWHEEL` events worked through the original
+  horizontal-scroll mapping;
 - the HID-BPF stylus can be mapped exclusively to the Kamvas display;
 - the uinput remapper runs without root after its targeted udev permissions are
   installed.
 
 The normal path reads only the normalized `REL_WHEEL` and `REL_HWHEEL` events
-created by upstream HID-BPF. It does not parse hidraw, duplicate the upstream
-decoder, or apply arbitrary debounce. Hidraw remains a compatibility fallback
-for unsupported kernels/distributions.
+and `BTN_0` through `BTN_6` events created by upstream HID-BPF. It does not
+parse hidraw, duplicate the upstream decoder, or apply arbitrary debounce.
+Hidraw remains a compatibility fallback for unsupported kernels/distributions.
+
+The configurable button shortcuts and new bottom-dial zoom mapping are covered
+by hardware-independent tests but still require their final real-device test on
+CachyOS + Hyprland + Wayland.
 
 ## Installation from a checkout
 
@@ -94,6 +100,8 @@ The Hyprland mapping targets only the confirmed HID-BPF device
 
 The setup is idempotent. Re-running it refreshes the managed runtime copy,
 reloads the systemd user unit and restarts the remapper with the current code.
+It creates the default remapper configuration only when none exists and never
+overwrites a customized file.
 It does not overwrite the user's Hyprland configuration: it installs a separate
 managed fragment and adds one marked, removable include block.
 
@@ -135,6 +143,94 @@ The service executes a managed copy below
 `$XDG_DATA_HOME/kamvas-bridge/runtime` (normally
 `~/.local/share/kamvas-bridge/runtime`), so daily operation does not depend on
 the clone remaining in the same directory.
+
+## Configurable buttons and dials
+
+Setup creates the XDG-aware configuration at:
+
+```text
+$XDG_CONFIG_HOME/kamvas-bridge/config.toml
+```
+
+The normal location is `~/.config/kamvas-bridge/config.toml`. Find or validate
+it with:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge config path
+PYTHONPATH=src python -m kamvas_bridge config validate
+```
+
+The physical button names observed on the GS1333 are:
+
+| Physical control | evdev event | Code | `MSC_SCAN` |
+| --- | --- | ---: | --- |
+| Top side button | `BTN_0` | 256 | `90001` |
+| Second side button | `BTN_1` | 257 | `90002` |
+| Third side button | `BTN_2` | 258 | `90003` |
+| Fourth side button | `BTN_3` | 259 | `90004` |
+| Bottom side button | `BTN_4` | 260 | `90005` |
+| One dial-center button | `BTN_5` | 261 | `90006` |
+| Other dial-center button | `BTN_6` | 262 | `90007` |
+
+`BTN_STYLUS` is intentionally not remapped. The generated defaults are:
+
+```toml
+[buttons]
+BTN_0 = "ctrl+z"
+BTN_1 = "disabled"
+BTN_2 = "disabled"
+BTN_3 = "disabled"
+BTN_4 = "disabled"
+BTN_5 = "disabled"
+BTN_6 = "disabled"
+
+[top_dial]
+clockwise = "scroll_up"
+counterclockwise = "scroll_down"
+
+[bottom_dial]
+clockwise = "zoom_in"
+counterclockwise = "zoom_out"
+```
+
+The top-dial names deliberately preserve the original pass-through sign:
+clockwise is the existing positive `REL_WHEEL` direction. Swap the two action
+values if the opposite physical scrolling direction is preferred.
+
+Edit the file directly, for example:
+
+```bash
+code ~/.config/kamvas-bridge/config.toml
+```
+
+```toml
+[buttons]
+BTN_0 = "ctrl+z"
+BTN_1 = "ctrl+shift+z"
+BTN_2 = "ctrl+s"
+BTN_3 = "space"
+BTN_4 = "disabled"
+BTN_5 = "disabled"
+BTN_6 = "disabled"
+```
+
+Then validate and restart the existing service; reinstalling is unnecessary:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge config validate
+PYTHONPATH=src python -m kamvas_bridge service restart
+```
+
+Shortcut parsing is case-insensitive and accepts zero or more of `ctrl`,
+`shift`, `alt`, and `super`, followed by one normal key, such as `ctrl+c`,
+`ctrl+shift+z`, `alt+tab`, `shift+x`, `space`, `escape`, `enter`, `delete`, or
+`f5`. Special actions are `disabled`, `scroll_up`, `scroll_down`,
+`scroll_left`, `scroll_right`, `zoom_in`, and `zoom_out`.
+
+`zoom_in` emits a complete `Ctrl+Shift+=` press/release sequence and `zoom_out`
+emits `Ctrl+-`. A separate, narrowly capable virtual keyboard is used instead
+of turning the virtual pointer into a combined input device. Configuration
+cannot execute shell commands, scripts, timed macros, or arbitrary programs.
 
 ## Manual development mode
 
@@ -190,7 +286,8 @@ Doctor distinguishes:
 - evdev permission failure;
 - missing or unwritable `/dev/uinput`;
 - inactive, failed or active remapper service;
-- missing virtual pointer;
+- invalid remapper configuration;
+- missing virtual pointer or virtual keyboard;
 - missing Hyprland mapping, output or HID-BPF stylus;
 - Live ISO/running-kernel module mismatch.
 
@@ -208,6 +305,7 @@ doctor. A fully operating configured system reports:
 
 ```text
 upstream HID path: READY
+remapper config: READY (.../kamvas-bridge/config.toml)
 remapper service: ACTIVE (running)
 remapper: READY
 Hyprland mapping: READY
@@ -259,8 +357,22 @@ or Linux input device.
 
 ## Scope
 
-Only the Huion Kamvas 13 Gen 3 / GS1333 (`256c:2008`) is supported. Advanced
-button actions, profiles and a GUI are not implemented yet.
+Only the Huion Kamvas 13 Gen 3 / GS1333 (`256c:2008`) is supported. Per-app
+profiles, arbitrary macros/commands and a GUI are not implemented.
+
+## Project note
+
+This project was created to solve a real compatibility issue encountered while
+using the Huion Kamvas 13 Gen 3 on Linux.
+
+AI-assisted development was used extensively during research, implementation,
+debugging, testing, and documentation. The resulting software has been tested
+on real hardware, but this repository does not present the code as entirely
+hand-written by its author or as a traditional portfolio project.
+
+It is published because the work may be useful to other Huion users facing
+similar Linux compatibility issues. Bug reports, testing on other systems,
+improvements, and contributions are welcome.
 
 ## License
 

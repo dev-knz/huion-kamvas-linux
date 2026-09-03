@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 
+from .config import ConfigError, ensure_user_config, load_config, user_config_path
 from .diagnostics import (
     BPF_FIRMWARE_ROOTS,
     HID_BPF_HWDB_ROOTS,
@@ -102,6 +103,8 @@ def _print_plan(
     switcher_installed: bool,
     environment: RuntimeEnvironment,
     hyprland_output: str | None,
+    config_path: Path,
+    config_exists: bool,
 ) -> None:
     print("CachyOS/Arch setup plan:")
     print(f"  running kernel: {environment.running_kernel}")
@@ -131,6 +134,11 @@ def _print_plan(
     print(f"  {step}. configure and load the uinput kernel module")
     step += 1
     print(f"  {step}. update the systemd hwdb and reload udev rules")
+    step += 1
+    if config_exists:
+        print(f"  {step}. preserve the validated remapper config at {config_path}")
+    else:
+        print(f"  {step}. create the default remapper config at {config_path}")
     step += 1
     print(f"  {step}. install and enable the systemd user remapper service")
     step += 1
@@ -285,12 +293,20 @@ def run_setup(
     if hyprland_output is not None:
         _preflight_hyprland(hyprland_output)
 
+    config_path = user_config_path()
+    try:
+        load_config(config_path)
+    except ConfigError as error:
+        raise SetupError(f"remapper config is invalid: {error}") from error
+
     environment = runtime_environment()
     switcher_installed = _switcher_installed()
     _print_plan(
         switcher_installed=switcher_installed,
         environment=environment,
         hyprland_output=hyprland_output,
+        config_path=config_path,
+        config_exists=config_path.is_file(),
     )
     if not environment.kernel_modules_match:
         if not apply:
@@ -334,8 +350,11 @@ def run_setup(
     _run_checked(["sudo", "udevadm", "settle"])
 
     try:
+        config_path, config_created = ensure_user_config(config_path)
         service_paths = install_user_service()
         enable_user_service()
+    except ConfigError as error:
+        raise SetupError(f"could not install the remapper config: {error}") from error
     except ServiceError as error:
         raise SetupError(f"could not install the user service: {error}") from error
 
@@ -347,6 +366,10 @@ def run_setup(
         print(f"Hyprland mapping installed: {hyprland_paths.fragment}")
 
     print("setup files installed successfully")
+    print(
+        f"remapper config {'created' if config_created else 'preserved'}: "
+        f"{config_path}"
+    )
     print(f"user service installed: {service_paths.unit}")
     print("next: physically unplug the tablet, wait two seconds, and reconnect it")
     print("then: PYTHONPATH=src python -m kamvas_bridge doctor")

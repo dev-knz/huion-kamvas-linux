@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import call, patch
 
+from kamvas_bridge.config import ConfigError
 from kamvas_bridge.environment import RuntimeEnvironment
 from kamvas_bridge.setup import (
     REMAPPER_RULE_SOURCE,
@@ -87,6 +88,23 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(result, 0)
         run_checked.assert_not_called()
 
+    def test_invalid_existing_config_blocks_before_system_changes(self) -> None:
+        with (
+            patch(
+                "kamvas_bridge.setup._read_os_release",
+                return_value={"ID": "cachyos"},
+            ),
+            patch(
+                "kamvas_bridge.setup.load_config",
+                side_effect=ConfigError("[buttons].BTN_0 is invalid"),
+            ),
+            patch("kamvas_bridge.setup._run_checked") as run_checked,
+            self.assertRaisesRegex(SetupError, "remapper config is invalid"),
+        ):
+            run_setup(apply=True, assume_yes=True)
+
+        run_checked.assert_not_called()
+
     def test_apply_refuses_to_build_from_source_as_root(self) -> None:
         with (
             patch(
@@ -122,6 +140,10 @@ class SetupTests(unittest.TestCase):
             patch("kamvas_bridge.setup._require_command"),
             patch("kamvas_bridge.setup._verify_packaged_bpf"),
             patch("kamvas_bridge.setup._install_remapper_runtime"),
+            patch(
+                "kamvas_bridge.setup.ensure_user_config",
+                return_value=(Path("/home/test/config.toml"), True),
+            ),
             patch("kamvas_bridge.setup._preflight_hyprland"),
             patch(
                 "kamvas_bridge.setup.configure_hyprland",
@@ -195,6 +217,10 @@ class SetupTests(unittest.TestCase):
             patch("kamvas_bridge.setup._verify_packaged_bpf"),
             patch("kamvas_bridge.setup._install_remapper_runtime"),
             patch(
+                "kamvas_bridge.setup.ensure_user_config",
+                return_value=(Path("/home/test/config.toml"), True),
+            ),
+            patch(
                 "kamvas_bridge.setup.install_user_service",
                 return_value=SimpleNamespace(unit=Path("/home/test/service")),
             ),
@@ -224,6 +250,10 @@ class SetupTests(unittest.TestCase):
             patch("kamvas_bridge.setup._require_command"),
             patch("kamvas_bridge.setup._verify_packaged_bpf"),
             patch("kamvas_bridge.setup._install_remapper_runtime"),
+            patch(
+                "kamvas_bridge.setup.ensure_user_config",
+                return_value=(Path("/home/test/config.toml"), False),
+            ),
             patch(
                 "kamvas_bridge.setup.install_user_service",
                 return_value=service_paths,
@@ -256,6 +286,10 @@ class SetupTests(unittest.TestCase):
             patch("kamvas_bridge.setup._require_command"),
             patch("kamvas_bridge.setup._verify_packaged_bpf"),
             patch("kamvas_bridge.setup._install_remapper_runtime"),
+            patch(
+                "kamvas_bridge.setup.ensure_user_config",
+                return_value=(Path("/home/test/config.toml"), True),
+            ),
             patch(
                 "kamvas_bridge.setup.install_user_service",
                 return_value=SimpleNamespace(unit=Path("/home/test/service")),
@@ -364,6 +398,7 @@ class SetupTests(unittest.TestCase):
 
         self.assertIn("HUION Huion Tablet_GS1333 Keypad", rule)
         self.assertIn("kamvas-bridge Virtual Pointer", rule)
+        self.assertIn("kamvas-bridge Virtual Keyboard", rule)
         self.assertIn('KERNEL=="uinput"', rule)
         self.assertNotIn('MODE="0666"', rule)
 

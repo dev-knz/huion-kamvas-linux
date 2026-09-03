@@ -1,35 +1,55 @@
-"""Translate the upstream GS1333 evdev dials into a virtual pointer."""
+"""Map normalized GS1333 evdev controls to safe configured actions."""
 
 from __future__ import annotations
 
 import asyncio
 import os
+import signal
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping, Protocol
 
+from .actions import (
+    EV_KEY,
+    EV_REL,
+    REL_HWHEEL,
+    REL_WHEEL,
+    ActionEmitter,
+    ActionInvocation,
+    SUPPORTED_KEY_CODES,
+)
+from .config import ConfigError, RemapperConfig, default_config, load_config, user_config_path
 from .diagnostics import (
+    VIRTUAL_KEYBOARD_NAME,
+    VIRTUAL_KEYBOARD_PRODUCT_ID,
     VIRTUAL_POINTER_NAME,
     VIRTUAL_PRODUCT_ID,
     VIRTUAL_VENDOR_ID,
     _keypad_devices,
 )
 
-EV_KEY = 0x01
-EV_REL = 0x02
-
+BTN_0 = 0x100
+BTN_1 = 0x101
+BTN_2 = 0x102
+BTN_3 = 0x103
+BTN_4 = 0x104
+BTN_5 = 0x105
+BTN_6 = 0x106
 BTN_LEFT = 0x110
+
 REL_X = 0x00
 REL_Y = 0x01
-REL_HWHEEL = 0x06
-REL_WHEEL = 0x08
 REL_WHEEL_HI_RES = 0x0B
 REL_HWHEEL_HI_RES = 0x0C
 
 BUS_VIRTUAL = 0x06
-DEFAULT_DIAL_MAPPING = {
-    REL_WHEEL: REL_WHEEL,
-    REL_HWHEEL: REL_HWHEEL,
+BUTTON_NAMES_BY_CODE = {
+    BTN_0: "BTN_0",
+    BTN_1: "BTN_1",
+    BTN_2: "BTN_2",
+    BTN_3: "BTN_3",
+    BTN_4: "BTN_4",
+    BTN_5: "BTN_5",
+    BTN_6: "BTN_6",
 }
 
 
@@ -37,45 +57,44 @@ class RemapperError(RuntimeError):
     """Raised when the evdev/uinput remapper cannot start."""
 
 
-class VirtualPointer(Protocol):
-    def write(self, event_type: int, code: int, value: int) -> None: ...
-
-    def syn(self) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class OutputEvent:
-    event_type: int
-    code: int
-    value: int
+class _TerminationRequested(Exception):
+    """Internal clean shutdown requested by systemd."""
 
 
 @dataclass(frozen=True, slots=True)
 class EventTranslator:
-    """Translate normalized evdev codes without parsing vendor reports."""
+    """Translate normalized physical events into configured action invocations."""
 
-    dial_mapping: Mapping[int, int] = field(
-        default_factory=lambda: dict(DEFAULT_DIAL_MAPPING)
-    )
+    config: RemapperConfig = field(default_factory=default_config)
 
-    def translate(self, event_type: int, code: int, value: int) -> OutputEvent | None:
+    def translate(
+        self, event_type: int, code: int, value: int
+    ) -> ActionInvocation | None:
+        if event_type == EV_KEY:
+            button_name = BUTTON_NAMES_BY_CODE.get(code)
+            # Shortcuts fire once on the physical press. Releases and kernel
+            # repeat values do not create duplicate shortcut sequences.
+            if button_name is None or value != 1:
+                return None
+            return ActionInvocation(self.config.buttons[button_name])
+
         if event_type != EV_REL or value == 0:
             return None
-
-        output_code = self.dial_mapping.get(code)
-        if output_code is None:
+        if code == REL_WHEEL:
+            dial = self.config.top_dial
+        elif code == REL_HWHEEL:
+            dial = self.config.bottom_dial
+        else:
+            # In particular, ignore the HI_RES companions to avoid two actions
+            # for a single physical detent.
             return None
-        return OutputEvent(EV_REL, output_code, value)
-
-
-def _emit(pointer: VirtualPointer, event: OutputEvent) -> None:
-    pointer.write(event.event_type, event.code, event.value)
-    pointer.syn()
+        action = dial.clockwise if value > 0 else dial.counterclockwise
+        return ActionInvocation(action, repeat=abs(value))
 
 
 async def _forward_device(
     path: Path,
-    pointer: VirtualPointer,
+    emitter: ActionEmitter,
     translator: EventTranslator,
     input_device_class: type,
 ) -> None:
@@ -84,22 +103,22 @@ async def _forward_device(
         device = input_device_class(str(path))
         print(f"GS1333 Keypad connected: {path}")
         async for event in device.async_read_loop():
-            output = translator.translate(event.type, event.code, event.value)
-            if output is not None:
-                _emit(pointer, output)
+            invocation = translator.translate(event.type, event.code, event.value)
+            if invocation is not None:
+                emitter.emit(invocation)
     except asyncio.CancelledError:
         raise
     except PermissionError as error:
         print(f"cannot read {path}: {error}; check the kamvas-bridge udev rule")
     except OSError as error:
-        print(f"GS1333 Keypad disconnected: {path} ({error})")
+        print(f"GS1333 Keypad/output unavailable: {path} ({error})")
     finally:
         if device is not None:
             device.close()
 
 
 async def _hotplug_loop(
-    pointer: VirtualPointer,
+    emitter: ActionEmitter,
     translator: EventTranslator,
     input_device_class: type,
     *,
@@ -123,7 +142,7 @@ async def _hotplug_loop(
                 tasks[path].cancel()
             for path in sources - set(tasks):
                 tasks[path] = asyncio.create_task(
-                    _forward_device(path, pointer, translator, input_device_class)
+                    _forward_device(path, emitter, translator, input_device_class)
                 )
 
             if sources:
@@ -155,8 +174,45 @@ def _acquire_instance_lock() -> object | None:
     return lock
 
 
+def _create_virtual_devices(uinput_class: type) -> tuple[object, object]:
+    pointer = uinput_class(
+        {
+            EV_KEY: [BTN_LEFT],
+            EV_REL: [REL_X, REL_Y, REL_WHEEL, REL_HWHEEL],
+        },
+        name=VIRTUAL_POINTER_NAME,
+        bustype=BUS_VIRTUAL,
+        vendor=VIRTUAL_VENDOR_ID,
+        product=VIRTUAL_PRODUCT_ID,
+        version=1,
+    )
+    try:
+        keyboard = uinput_class(
+            {EV_KEY: sorted(SUPPORTED_KEY_CODES)},
+            name=VIRTUAL_KEYBOARD_NAME,
+            bustype=BUS_VIRTUAL,
+            vendor=VIRTUAL_VENDOR_ID,
+            product=VIRTUAL_KEYBOARD_PRODUCT_ID,
+            version=1,
+        )
+    except BaseException:
+        pointer.close()
+        raise
+    return pointer, keyboard
+
+
+def _request_termination(_signum: int, _frame: object) -> None:
+    raise _TerminationRequested
+
+
 def run_remapper(*, scan_interval: float = 1.0) -> int:
-    """Run the hotplug-aware evdev to uinput bridge until interrupted."""
+    """Run the hotplug-aware configured bridge until interrupted."""
+
+    configuration_path = user_config_path()
+    try:
+        configuration = load_config(configuration_path)
+    except ConfigError as error:
+        raise RemapperError(f"invalid remapper config: {error}") from error
 
     try:
         from evdev import InputDevice, UInput, UInputError
@@ -166,40 +222,46 @@ def run_remapper(*, scan_interval: float = 1.0) -> int:
         ) from error
 
     lock = _acquire_instance_lock()
-    capabilities = {
-        EV_KEY: [BTN_LEFT],
-        EV_REL: [REL_X, REL_Y, REL_WHEEL, REL_HWHEEL],
-    }
     try:
-        pointer = UInput(
-            capabilities,
-            name=VIRTUAL_POINTER_NAME,
-            bustype=BUS_VIRTUAL,
-            vendor=VIRTUAL_VENDOR_ID,
-            product=VIRTUAL_PRODUCT_ID,
-            version=1,
-        )
+        pointer, keyboard = _create_virtual_devices(UInput)
     except (FileNotFoundError, PermissionError, OSError, UInputError) as error:
         if lock is not None:
             lock.close()
         raise RemapperError(
-            "cannot create the virtual pointer; check /dev/uinput permissions"
+            "cannot create the virtual pointer/keyboard; check /dev/uinput permissions"
         ) from error
 
+    emitter = ActionEmitter(pointer, keyboard)
+    config_source = configuration_path if configuration_path.exists() else "built-in defaults"
+    print(f"remapper config: {config_source}")
     print(f"virtual pointer created: {pointer.device}")
-    print("dial 0 -> vertical scroll; dial 1 -> horizontal scroll")
+    print(f"virtual keyboard created: {keyboard.device}")
+    print("top dial -> vertical scroll; bottom dial -> zoom")
+
+    previous_sigterm: object | None = None
+    try:
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, _request_termination)
+    except (OSError, ValueError):
+        previous_sigterm = None
+
     try:
         asyncio.run(
             _hotplug_loop(
-                pointer,
-                EventTranslator(),
+                emitter,
+                EventTranslator(configuration),
                 InputDevice,
                 scan_interval=scan_interval,
             )
         )
+    except _TerminationRequested:
+        return 0
     except KeyboardInterrupt:
         return 130
     finally:
+        if previous_sigterm is not None:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+        keyboard.close()
         pointer.close()
         if lock is not None:
             lock.close()

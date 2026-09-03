@@ -110,19 +110,35 @@ name ends in `GS1333 Keypad`:
 
 - top dial: `REL_WHEEL` ±1 and `REL_WHEEL_HI_RES` ±120;
 - bottom dial: `REL_HWHEEL` ±1 and `REL_HWHEEL_HI_RES` ±120.
+- side buttons, top to bottom: `BTN_0` through `BTN_4`;
+- the two dial-center buttons: `BTN_5` and `BTN_6`.
 
-Both milestones are complete. Physical testing confirmed the upstream events
-and real application scrolling through the virtual pointer. Verify the
-automatic process with:
+The upstream and original pointer-scroll milestones are complete. Verify the
+automatic process and the new configuration with:
 
 ```bash
+PYTHONPATH=src python -m kamvas_bridge config validate
 PYTHONPATH=src python -m kamvas_bridge service status
 PYTHONPATH=src python -m kamvas_bridge doctor
 ```
 
 `doctor` distinguishes the upstream HID state, remapper runtime, service state,
-permissions, and optional Hyprland mapping. If foreground output is needed,
-disable the user service before running `remap` manually.
+config validity, pointer/keyboard devices, permissions, and optional Hyprland
+mapping. If foreground output is needed, disable the user service before
+running `remap` manually.
+
+The configurable output layer added after those observations still needs one
+real-device validation:
+
+1. confirm the top dial still scrolls in the same directions;
+2. make an undoable edit and confirm `BTN_0` produces `Ctrl+Z` once per press;
+3. confirm the lower dial zooms in/out in Firefox;
+4. temporarily assign `BTN_1 = "ctrl+shift+z"`, validate the config, restart
+   the user service, and confirm the new mapping;
+5. check that no modifier remains pressed after service restart or shutdown.
+
+Do not describe these new shortcut/zoom outputs as physically confirmed until
+that CachyOS + Hyprland + Wayland test succeeds.
 
 ## 4. Diagnose an automatic-load failure
 
@@ -174,10 +190,12 @@ From the repository root:
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-These tests cover packet parsing, normalized dial translation, discovery and
-hotplug behavior, service installation and state, Hyprland configuration,
-Live-ISO/kernel mismatch safety, setup sequencing, and diagnosis without
-requiring a tablet.
+These tests cover packet parsing, normalized button/dial translation, TOML
+defaults and validation, generic shortcut parsing, exact key press/release
+order, separate virtual-device capabilities, non-overwriting setup behavior,
+discovery and hotplug behavior, service installation/state, Hyprland
+configuration, Live-ISO/kernel mismatch safety, setup sequencing, and
+diagnosis without requiring a tablet.
 
 ## 6. Live-ISO recovery
 

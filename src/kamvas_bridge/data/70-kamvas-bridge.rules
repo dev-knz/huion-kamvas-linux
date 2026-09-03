@@ -4,5 +4,8 @@ SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="HUION Huion Tablet_GS1333 Ke
 # python-evdev opens the event node created by UInput while constructing it.
 SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="kamvas-bridge Virtual Pointer", ATTRS{id/vendor}=="1209", ATTRS{id/product}=="4b42", TAG+="uaccess"
 
+# Keep python-evdev's virtual keyboard discovery scoped to the active session.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="kamvas-bridge Virtual Keyboard", ATTRS{id/vendor}=="1209", ATTRS{id/product}=="4b43", TAG+="uaccess"
+
 # uinput access permits input injection; limit it to the active local session.
 SUBSYSTEM=="misc", KERNEL=="uinput", TAG+="uaccess", OPTIONS+="static_node=uinput"

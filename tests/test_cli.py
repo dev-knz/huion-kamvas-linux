@@ -25,6 +25,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.hyprland_action, "configure")
         self.assertEqual(args.output, "DP-2")
 
+    def test_config_validate_command(self) -> None:
+        args = _parser().parse_args(["config", "validate"])
+
+        self.assertEqual(args.config_action, "validate")
+
 
 if __name__ == "__main__":
     unittest.main()

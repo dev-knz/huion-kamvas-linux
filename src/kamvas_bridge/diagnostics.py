@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from importlib.util import find_spec
 from pathlib import Path
 
+from .config import ConfigError, load_config, user_config_path
 from .device import DeviceDiscoveryError, find_vendor_hidraw
 from .environment import runtime_environment
 from .hyprland import STYLUS_DEVICE_NAME, hyprland_status
@@ -28,8 +29,10 @@ KEYPAD_NAME = "HUION Huion Tablet_GS1333 Keypad"
 KEYPAD_VENDOR_ID = 0x256C
 KEYPAD_PRODUCT_ID = 0x2008
 VIRTUAL_POINTER_NAME = "kamvas-bridge Virtual Pointer"
+VIRTUAL_KEYBOARD_NAME = "kamvas-bridge Virtual Keyboard"
 VIRTUAL_VENDOR_ID = 0x1209
 VIRTUAL_PRODUCT_ID = 0x4B42
+VIRTUAL_KEYBOARD_PRODUCT_ID = 0x4B43
 REL_CAPABILITY_NAMES = {
     8: "REL_WHEEL",
     11: "REL_WHEEL_HI_RES",
@@ -37,6 +40,10 @@ REL_CAPABILITY_NAMES = {
     12: "REL_HWHEEL_HI_RES",
 }
 REQUIRED_KEYPAD_REL_CODES = frozenset((6, 8))
+KEY_CAPABILITY_NAMES = {
+    code: f"BTN_{code - 0x100}" for code in range(0x100, 0x107)
+}
+REQUIRED_KEYPAD_KEY_CODES = frozenset(KEY_CAPABILITY_NAMES)
 
 REMAPPER_RULE_PATHS = (
     Path("/etc/udev/rules.d/70-kamvas-bridge.rules"),
@@ -78,6 +85,7 @@ class KeypadDevice:
     relative_codes: frozenset[int]
     vendor_id: int
     product_id: int
+    key_codes: frozenset[int] = frozenset()
 
 
 def _normalized_name(path: Path) -> str:
@@ -196,9 +204,6 @@ def _input_devices_named(
             name = (event / "device" / "name").read_text(
                 encoding="utf-8", errors="replace"
             )
-            relative = (event / "device" / "capabilities" / "rel").read_text(
-                encoding="ascii", errors="replace"
-            )
             vendor_id = int(
                 (event / "device" / "id" / "vendor").read_text().strip(), 16
             )
@@ -213,6 +218,19 @@ def _input_devices_named(
             or product_id != product_to_match
         ):
             continue
+        capabilities = event / "device" / "capabilities"
+        try:
+            relative = (capabilities / "rel").read_text(
+                encoding="ascii", errors="replace"
+            )
+        except OSError:
+            relative = ""
+        try:
+            keys = (capabilities / "key").read_text(
+                encoding="ascii", errors="replace"
+            )
+        except OSError:
+            keys = ""
         devices.append(
             KeypadDevice(
                 path=dev_root / event.name,
@@ -220,6 +238,7 @@ def _input_devices_named(
                 relative_codes=_parse_capability_bitmap(relative),
                 vendor_id=vendor_id,
                 product_id=product_id,
+                key_codes=_parse_capability_bitmap(keys),
             )
         )
     return devices
@@ -246,6 +265,19 @@ def _virtual_pointer_devices(
         VIRTUAL_POINTER_NAME,
         VIRTUAL_VENDOR_ID,
         VIRTUAL_PRODUCT_ID,
+        root,
+        dev_root,
+    )
+
+
+def _virtual_keyboard_devices(
+    root: Path = INPUT_CLASS_ROOT,
+    dev_root: Path = INPUT_DEVICE_ROOT,
+) -> list[KeypadDevice]:
+    return _input_devices_named(
+        VIRTUAL_KEYBOARD_NAME,
+        VIRTUAL_VENDOR_ID,
+        VIRTUAL_KEYBOARD_PRODUCT_ID,
         root,
         dev_root,
     )
@@ -395,16 +427,33 @@ def doctor() -> int:
                 for code, name in REL_CAPABILITY_NAMES.items()
                 if code in keypad.relative_codes
             ]
-            missing = REQUIRED_KEYPAD_REL_CODES - keypad.relative_codes
+            buttons = [
+                name
+                for code, name in KEY_CAPABILITY_NAMES.items()
+                if code in keypad.key_codes
+            ]
+            missing_rel = REQUIRED_KEYPAD_REL_CODES - keypad.relative_codes
+            missing_keys = REQUIRED_KEYPAD_KEY_CODES - keypad.key_codes
             print(f"GS1333 Keypad: {keypad.path} ({KEYPAD_NAME})")
             print(
                 "GS1333 Keypad EV_REL: "
                 + (", ".join(capabilities) if capabilities else "NONE")
             )
-            if missing:
-                missing_names = [REL_CAPABILITY_NAMES[code] for code in sorted(missing)]
+            print(
+                "GS1333 Keypad EV_KEY: "
+                + (", ".join(buttons) if buttons else "NONE")
+            )
+            if missing_rel:
+                missing_names = [
+                    REL_CAPABILITY_NAMES[code] for code in sorted(missing_rel)
+                ]
                 print("GS1333 Keypad missing: " + ", ".join(missing_names))
-            else:
+            if missing_keys:
+                missing_names = [
+                    KEY_CAPABILITY_NAMES[code] for code in sorted(missing_keys)
+                ]
+                print("GS1333 Keypad missing: " + ", ".join(missing_names))
+            if not missing_rel and not missing_keys:
                 keypad_ready = True
         if not keypad_ready:
             problems += 1
@@ -425,6 +474,16 @@ def doctor() -> int:
     )
 
     remapper_problems = 0
+    config_path = user_config_path()
+    try:
+        load_config(config_path)
+    except ConfigError as error:
+        print(f"remapper config: INVALID ({error})")
+        remapper_problems += 1
+    else:
+        source = config_path if config_path.is_file() else "built-in defaults"
+        print(f"remapper config: READY ({source})")
+
     remapper_rule = _first_existing(REMAPPER_RULE_PATHS)
     modules_load = _first_existing(MODULES_LOAD_PATHS)
     print(f"kamvas-bridge udev rule: {remapper_rule or 'NOT FOUND'}")
@@ -470,6 +529,14 @@ def doctor() -> int:
     else:
         print("virtual pointer: NOT FOUND")
     if not virtual_ready:
+        remapper_problems += 1
+
+    virtual_keyboards = _virtual_keyboard_devices()
+    if virtual_keyboards:
+        for keyboard in virtual_keyboards:
+            print(f"virtual keyboard: {keyboard.path} ({VIRTUAL_KEYBOARD_NAME})")
+    else:
+        print("virtual keyboard: NOT FOUND")
         remapper_problems += 1
 
     runtime_ready = remapper_problems == 0

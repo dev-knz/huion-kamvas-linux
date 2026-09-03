@@ -1,61 +1,112 @@
-# Normalized dial remapping
+# Configurable normalized-event remapping
 
-The upstream path exposes the two physical dials as tablet-pad dials. This is
-correct behavior, but browsers consume pointer scroll rather than
-`TABLET_PAD_DIAL` events.
+The supported path consumes the GS1333 Keypad events already normalized by
+upstream HID-BPF. It never decodes the vendor hidraw reports in the normal
+remapper.
 
-`kamvas-bridge remap` opens only the confirmed GS1333 Keypad evdev device and
-creates `kamvas-bridge Virtual Pointer` through uinput:
+```text
+physical evdev event
+  -> logical button/dial direction
+  -> action selected from config.toml
+  -> separate uinput pointer or keyboard
+  -> compositor/application
+```
 
-| Source event | Virtual pointer event | Initial behavior |
+## Configuration lifecycle
+
+The configuration is XDG-aware:
+
+```text
+$XDG_CONFIG_HOME/kamvas-bridge/config.toml
+~/.config/kamvas-bridge/config.toml   # normal fallback
+```
+
+Setup creates a documented default with exclusive-create semantics. An
+existing file is validated but never replaced. If the file is absent when the
+remapper is run directly, the same internal defaults are used.
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge config path
+PYTHONPATH=src python -m kamvas_bridge config validate
+```
+
+After editing the file, reload it by restarting the existing user service:
+
+```bash
+PYTHONPATH=src python -m kamvas_bridge service restart
+```
+
+Live file watching is intentionally outside this iteration.
+
+## Buttons
+
+The five side buttons were observed from top to bottom as `BTN_0` through
+`BTN_4`. The two dial-center buttons are `BTN_5` and `BTN_6`; the hardware
+evidence does not yet identify which center corresponds to which number.
+
+| Control | evdev code | Scan code | Default |
+| --- | ---: | --- | --- |
+| Top side button (`BTN_0`) | 256 | `90001` | `ctrl+z` |
+| Second side button (`BTN_1`) | 257 | `90002` | `disabled` |
+| Third side button (`BTN_2`) | 258 | `90003` | `disabled` |
+| Fourth side button (`BTN_3`) | 259 | `90004` | `disabled` |
+| Bottom side button (`BTN_4`) | 260 | `90005` | `disabled` |
+| One dial-center button (`BTN_5`) | 261 | `90006` | `disabled` |
+| Other dial-center button (`BTN_6`) | 262 | `90007` | `disabled` |
+
+Only a physical press (`value=1`) invokes a shortcut. Release and repeat events
+are ignored, so one press creates one complete shortcut. `BTN_STYLUS` is left
+untouched.
+
+## Dials
+
+| Source event | Logical control | Default action |
 | --- | --- | --- |
-| `REL_WHEEL` ±1 | `REL_WHEEL` ±1 | dial 0, vertical scroll |
-| `REL_HWHEEL` ±1 | `REL_HWHEEL` ±1 | dial 1, horizontal scroll |
-| `REL_WHEEL_HI_RES` ±120 | ignored | companion of `REL_WHEEL` |
-| `REL_HWHEEL_HI_RES` ±120 | ignored | companion of `REL_HWHEEL` |
+| positive `REL_WHEEL` | top clockwise | `scroll_up` |
+| negative `REL_WHEEL` | top counterclockwise | `scroll_down` |
+| positive `REL_HWHEEL` | bottom clockwise | `zoom_in` |
+| negative `REL_HWHEEL` | bottom counterclockwise | `zoom_out` |
+| `REL_WHEEL_HI_RES` | companion event | ignored |
+| `REL_HWHEEL_HI_RES` | companion event | ignored |
 
-Ignoring the high-resolution companions prevents one physical detent from
-being emitted twice. The remapper does not contain a hidraw parser or debounce.
+The top defaults preserve the exact sign used by the already physically tested
+pass-through implementation. The labels may therefore differ from a preferred
+physical rotation direction; users can swap the two TOML values without code
+changes.
 
-## Physically confirmed behavior
+HI_RES events remain ignored. Each detent therefore invokes only one action,
+not both its normal and high-resolution reports.
 
-After `setup --apply` and a physical reconnect, the user service starts the
-remapper automatically. Physical testing confirmed that dial 0 scrolls Firefox
-vertically and dial 1 scrolls horizontally in applications that support a
-horizontal axis.
+## Actions and virtual devices
 
-Check both layers with:
+Special actions are:
 
-```bash
-PYTHONPATH=src python -m kamvas_bridge service status
-PYTHONPATH=src python -m kamvas_bridge doctor
+```text
+disabled
+scroll_up  scroll_down  scroll_left  scroll_right
+zoom_in    zoom_out
 ```
 
-The complete working state reports `upstream HID path: READY`, an active and
-enabled remapper service, and `remapper: READY`.
+Other strings are parsed as a small generic keyboard chord: any reasonable
+combination of `ctrl`, `shift`, `alt`, and `super`, plus exactly one supported
+normal key. Parsing is case-insensitive. Letters, digits, `F1`–`F12`, common
+navigation keys, and names including `space`, `escape`, `enter`, `tab`,
+`backspace`, `delete`, `minus`, and `equal` are supported.
 
-For debugging in the foreground, stop the persistent copy first:
+The pointer device exposes only pointer/scroll capabilities. A separate
+`kamvas-bridge Virtual Keyboard` exposes the finite set of keyboard keys the
+parser accepts. For each keyboard action, modifiers and the key are pressed in
+order, synchronized, released in reverse order, and synchronized again. The
+release path runs even if emission is interrupted.
 
-```bash
-PYTHONPATH=src python -m kamvas_bridge service disable
-PYTHONPATH=src python -m kamvas_bridge remap
-```
+No configured string is passed to a shell. Multiple normal keys, unknown keys,
+unknown tables/settings, malformed TOML, arbitrary commands, and scripts are
+rejected with a location-specific error.
 
-Enable it again after testing with `kamvas-bridge service enable`.
+## Hardware status
 
-## Detection and hotplug
-
-The source is selected dynamically using all of:
-
-- input name `HUION Huion Tablet_GS1333 Keypad`;
-- USB vendor `256c`;
-- USB product `2008`.
-
-No `/dev/input/eventN` number is stored. The running process rescans after
-disconnects and attaches to the new event node. The virtual pointer has a
-different name and virtual vendor/product IDs, so it cannot be selected as a
-source and create a feedback loop.
-
-The mapping table is isolated from device I/O. Future configuration can map
-dials and buttons to different output actions without changing HID-BPF or
-reintroducing vendor-report parsing.
+The upstream button codes and both dial event streams were observed on physical
+GS1333 hardware. The top-dial virtual pointer scrolling was also confirmed in
+real applications. The newly introduced BTN shortcut output, separate virtual
+keyboard, and default bottom-dial zoom still require final physical validation
+on CachyOS + Hyprland + Wayland.

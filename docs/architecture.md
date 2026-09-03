@@ -9,9 +9,10 @@ USB hotplug
 
  vendor reports -> attached HID-BPF -> kernel Keypad events
   -> evdev/libinput tablet-pad dials
-  -> kamvas-bridge normalized-event remapper (systemd --user)
-  -> uinput virtual pointer/keyboard outputs
-  -> libinput pointer scroll
+  -> logical GS1333 controls -> configured safe actions
+  -> kamvas-bridge remapper (systemd --user)
+  +-> uinput virtual pointer  -> libinput pointer scroll
+  +-> uinput virtual keyboard -> keyboard shortcuts/zoom
   -> Hyprland, GNOME, KDE, Sway and applications
 ```
 
@@ -53,17 +54,18 @@ Libinput correctly converts these into `TABLET_PAD_DIAL` events for dial 0 and
 dial 1. That validates the upstream decoder, but tablet-pad dials are not
 pointer axes and therefore do not scroll Firefox automatically.
 
-The main userspace component now translates the already normalized
-low-resolution `REL_WHEEL` and `REL_HWHEEL` events into an uinput virtual
-pointer. It ignores their high-resolution companions to avoid duplicate output.
-The architecture reserves a virtual keyboard for future configurable actions,
-but the initial implementation creates only the pointer required by the dial
-milestone. There is still no reason to decode GS1333 vendor packets again in
-the normal userspace path.
+The main userspace component maps already normalized low-resolution dial and
+`BTN_0`–`BTN_6` events through the user's TOML configuration. It ignores the
+high-resolution dial companions to avoid duplicate output. Scroll actions use
+the existing virtual pointer; shortcuts and bottom-dial zoom use a separate
+virtual keyboard with a finite capability set. There is still no reason to
+decode GS1333 vendor packets again in the normal userspace path.
 
 The complete path through the virtual pointer was then physically confirmed:
 the top dial scrolls vertically and the bottom dial scrolls horizontally in
-applications. The userspace milestone is therefore complete as well.
+applications. That confirms the original pointer path; the new configurable
+button shortcuts and bottom-dial keyboard zoom still need final hardware
+validation.
 
 ## Process model
 
@@ -79,11 +81,16 @@ The process also takes a per-user runtime lock. A second service or foreground
 copy exits instead of creating duplicate virtual devices. For development, the
 service can be disabled before running `kamvas-bridge remap` manually.
 
+Configuration is loaded once at process start from the XDG config directory.
+The setup command creates defaults only when the file is absent, and service
+restart applies later edits. The action parser accepts only named internal
+actions and bounded keyboard chords; it has no shell or command execution path.
+
 The udev permission rule grants the active local session access to the specific
 GS1333 event device, `/dev/uinput`, and the identified virtual pointer event
-node that `python-evdev` opens during construction. Access to uinput permits
-input injection, so it is deliberately scoped with `TAG+="uaccess"` instead of
-a world-writable device mode.
+and virtual keyboard event nodes that `python-evdev` opens during construction.
+Access to uinput permits input injection, so it is deliberately scoped with
+`TAG+="uaccess"` instead of a world-writable device mode.
 
 ## Project priorities
 
@@ -95,8 +102,8 @@ Development should proceed in this order:
 3. verify `udev-hid-bpf`, its objects, hwdb and rules;
 4. detect kernel/distribution support and present actionable recovery steps;
 5. verify the automatic user service and persistent compositor mapping;
-6. add configurable dial/button mappings and profiles;
-7. add a GUI after the configuration model is stable.
+6. physically validate configurable buttons and bottom-dial zoom;
+7. consider profiles and a GUI only after the action model is stable.
 
 ## Userspace fallback
 

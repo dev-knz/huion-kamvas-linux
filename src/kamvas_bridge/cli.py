@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 from .capture import capture
+from .config import ConfigError, ensure_user_config, load_config, user_config_path
 from .device import DeviceDiscoveryError, find_vendor_hidraw
 from .diagnostics import doctor
 from .hyprland import (
@@ -30,7 +31,7 @@ from .setup import SetupError, run_setup
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kamvas-bridge",
-        description="Huion Kamvas 13 Gen 3 setup, diagnostics and dial remapping",
+        description="Huion Kamvas 13 Gen 3 setup, diagnostics and control remapping",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -38,7 +39,7 @@ def _parser() -> argparse.ArgumentParser:
         "doctor", help="verify upstream and remapper readiness"
     )
     subparsers.add_parser(
-        "remap", help="translate GS1333 tablet-pad dials to pointer scrolling"
+        "remap", help="map normalized GS1333 buttons and dials to configured actions"
     )
 
     setup_parser = subparsers.add_parser(
@@ -89,6 +90,15 @@ def _parser() -> argparse.ArgumentParser:
     status_parser = hyprland_subparsers.add_parser("status")
     status_parser.add_argument("--config", type=Path)
 
+    config_parser = subparsers.add_parser(
+        "config", help="locate or validate the remapper TOML configuration"
+    )
+    config_subparsers = config_parser.add_subparsers(
+        dest="config_action", required=True
+    )
+    config_subparsers.add_parser("path")
+    config_subparsers.add_parser("validate")
+
     capture_parser = subparsers.add_parser(
         "capture", help="timestamp vendor reports for duplicate analysis"
     )
@@ -131,9 +141,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "service":
         try:
             if args.service_action == "install":
+                config_path, config_created = ensure_user_config()
                 paths = install_user_service()
                 enable_user_service()
                 print(f"installed and enabled: {paths.unit}")
+                print(
+                    f"config {'created' if config_created else 'preserved'}: "
+                    f"{config_path}"
+                )
                 return 0
             if args.service_action == "enable":
                 enable_user_service()
@@ -149,6 +164,8 @@ def main(argv: list[str] | None = None) -> int:
                 print("kamvas-bridge user service removed")
                 return 0
             return print_service_status()
+        except ConfigError as error:
+            raise SystemExit(f"service config failed: {error}") from error
         except ServiceError as error:
             raise SystemExit(f"service failed: {error}") from error
 
@@ -167,6 +184,21 @@ def main(argv: list[str] | None = None) -> int:
             return print_hyprland_status(main_config=args.config)
         except HyprlandError as error:
             raise SystemExit(f"Hyprland configuration failed: {error}") from error
+
+    if args.command == "config":
+        path = user_config_path()
+        if args.config_action == "path":
+            print(path)
+            return 0
+        try:
+            load_config(path)
+        except ConfigError as error:
+            raise SystemExit(f"remapper config: INVALID ({error})") from error
+        if path.is_file():
+            print(f"remapper config: READY ({path})")
+        else:
+            print(f"remapper config: READY (built-in defaults; expected path: {path})")
+        return 0
 
     if args.count is not None and args.count < 1:
         raise SystemExit("--count must be greater than zero")

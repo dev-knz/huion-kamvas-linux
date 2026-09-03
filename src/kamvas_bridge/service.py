@@ -76,7 +76,7 @@ def render_service_unit(
     python_path = _unit_quote(f"PYTHONPATH={runtime_root}")
     return (
         "[Unit]\n"
-        "Description=Huion Kamvas GS1333 dial remapper\n"
+        "Description=Huion Kamvas GS1333 control remapper\n"
         "Documentation=https://github.com/dev-knz/huion-kamvas-linux\n"
         "StartLimitIntervalSec=60\n"
         "StartLimitBurst=5\n"

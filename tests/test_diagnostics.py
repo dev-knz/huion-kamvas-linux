@@ -5,6 +5,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from kamvas_bridge.config import ConfigError
 from kamvas_bridge.device import DeviceDiscoveryError
 from kamvas_bridge.diagnostics import (
     KeypadDevice,
@@ -16,6 +17,7 @@ from kamvas_bridge.diagnostics import (
     _parse_capability_bitmap,
     _parse_properties,
     _udev_hid_bpf_package,
+    _virtual_keyboard_devices,
     _virtual_pointer_devices,
     doctor,
 )
@@ -125,6 +127,9 @@ class DiagnosticHelpersTests(unittest.TestCase):
             (keypad / "capabilities" / "rel").write_text(
                 "1940\n", encoding="ascii"
             )
+            (keypad / "capabilities" / "key").write_text(
+                "7f 0 0 0 0\n", encoding="ascii"
+            )
             (keypad / "id").mkdir()
             (keypad / "id" / "vendor").write_text("256c\n", encoding="ascii")
             (keypad / "id" / "product").write_text("2008\n", encoding="ascii")
@@ -134,6 +139,7 @@ class DiagnosticHelpersTests(unittest.TestCase):
             self.assertEqual(len(devices), 1)
             self.assertEqual(devices[0].path, Path("/test-input/event7"))
             self.assertTrue({6, 8, 11, 12} <= devices[0].relative_codes)
+            self.assertTrue(set(range(256, 263)) <= devices[0].key_codes)
 
     def test_finds_virtual_pointer_without_matching_it_as_keypad(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -157,12 +163,34 @@ class DiagnosticHelpersTests(unittest.TestCase):
             self.assertEqual(virtual[0].path, Path("/test-input/event30"))
             self.assertEqual(keypads, [])
 
+    def test_finds_virtual_keyboard_without_relative_capabilities(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            keyboard = root / "event31" / "device"
+            (keyboard / "capabilities").mkdir(parents=True)
+            (keyboard / "id").mkdir()
+            (keyboard / "name").write_text(
+                "kamvas-bridge Virtual Keyboard\n", encoding="utf-8"
+            )
+            (keyboard / "capabilities" / "key").write_text(
+                "40000000\n", encoding="ascii"
+            )
+            (keyboard / "id" / "vendor").write_text("1209\n", encoding="ascii")
+            (keyboard / "id" / "product").write_text("4b43\n", encoding="ascii")
+
+            devices = _virtual_keyboard_devices(root, Path("/test-input"))
+
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0].path, Path("/test-input/event31"))
+        self.assertEqual(devices[0].relative_codes, frozenset())
+
     def _doctor_output(
         self,
         *,
         keypads: list[KeypadDevice],
         uinput_writable: bool,
         service: ServiceState,
+        config_error: ConfigError | None = None,
     ) -> str:
         virtual = KeypadDevice(
             path=Path("/dev/input/event40"),
@@ -170,6 +198,13 @@ class DiagnosticHelpersTests(unittest.TestCase):
             relative_codes=frozenset((6, 8)),
             vendor_id=0x1209,
             product_id=0x4B42,
+        )
+        keyboard = KeypadDevice(
+            path=Path("/dev/input/event41"),
+            sysfs_path=Path("/sys/class/input/event41"),
+            relative_codes=frozenset(),
+            vendor_id=0x1209,
+            product_id=0x4B43,
         )
         runtime = RuntimeEnvironment(
             live=False,
@@ -223,6 +258,18 @@ class DiagnosticHelpersTests(unittest.TestCase):
                 "kamvas_bridge.diagnostics._virtual_pointer_devices",
                 return_value=[virtual],
             ),
+            patch(
+                "kamvas_bridge.diagnostics._virtual_keyboard_devices",
+                return_value=[keyboard],
+            ),
+            patch(
+                "kamvas_bridge.diagnostics.load_config",
+                side_effect=config_error,
+            ),
+            patch(
+                "kamvas_bridge.diagnostics.user_config_path",
+                return_value=Path("/home/test/config.toml"),
+            ),
             patch("kamvas_bridge.diagnostics.find_spec", return_value=object()),
             patch("kamvas_bridge.diagnostics.UINPUT_PATH", fake_uinput),
             patch(
@@ -257,6 +304,7 @@ class DiagnosticHelpersTests(unittest.TestCase):
             relative_codes=frozenset((6, 8, 11, 12)),
             vendor_id=0x256C,
             product_id=0x2008,
+            key_codes=frozenset(range(256, 263)),
         )
         service = ServiceState(True, "loaded", "disabled", "inactive", "dead")
 
@@ -267,6 +315,27 @@ class DiagnosticHelpersTests(unittest.TestCase):
         self.assertIn("uinput writable: no", output)
         self.assertIn("remapper service: INACTIVE", output)
         self.assertIn("kamvas-bridge service enable", output)
+        self.assertIn("remapper: NOT READY", output)
+
+    def test_doctor_reports_invalid_remapper_config(self) -> None:
+        keypad = KeypadDevice(
+            path=Path("/dev/input/event27"),
+            sysfs_path=Path("/sys/class/input/event27"),
+            relative_codes=frozenset((6, 8, 11, 12)),
+            vendor_id=0x256C,
+            product_id=0x2008,
+            key_codes=frozenset(range(256, 263)),
+        )
+        service = ServiceState(True, "loaded", "enabled", "active", "running")
+
+        output = self._doctor_output(
+            keypads=[keypad],
+            uinput_writable=True,
+            service=service,
+            config_error=ConfigError("[buttons].BTN_0: unknown action"),
+        )
+
+        self.assertIn("remapper config: INVALID", output)
         self.assertIn("remapper: NOT READY", output)
 
 
